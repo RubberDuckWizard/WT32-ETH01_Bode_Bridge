@@ -202,13 +202,6 @@ Use a **3.3 V logic USB-TTL adapter** such as a CP2102-based adapter and cross t
 - `WT32 RXD / IO3 / RXD0` -> adapter `TX`
 - `WT32 GND` -> adapter `GND`
 
-Optional manual control lines, if your adapter and wiring support them:
-
-- adapter `RTS` -> `EN`
-- adapter `DTR` -> `GPIO0`
-
-These lines are not mandatory, but they can help with automatic reset/bootloader entry on some setups.
-
 ### ESP32 ROM bootloader serial settings (for flashing)
 
 When talking to the ESP32 ROM bootloader through a USB-TTL adapter, use:
