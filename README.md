@@ -9,8 +9,6 @@ This repository has been conservatively cleaned up around a single main variant:
 - auxiliary recovery build: `wt32eth_bringup_safe`
 - auxiliary FY service build: `wt32eth_final_test_safe`
 
-The authoritative documents for the final state are this README and `debug/final_cleanup_report.txt`.
-
 ## Final architecture
 
 - dedicated static LAN for the oscilloscope on WT32-ETH01 Ethernet
@@ -323,4 +321,3 @@ Not automatically demonstrated by the code alone:
 - `novnc_two_clients_upgrade_report.txt`
 - `final_cleanup_report.txt`
 
-These are historical engineering reports. The current final state of the project is summarized in this README and in `debug/final_cleanup_report.txt`.
