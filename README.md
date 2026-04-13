@@ -132,6 +132,7 @@ Role of WiFi:
 ### Permanent Recovery AP
 
 - default SSID: `WT32-BODE-SETUP`
+- default password: 'wt32-bode'
 - default IP: `192.168.4.1/24`
 - kept active in the final main build as a recovery/service path
 
