@@ -78,7 +78,7 @@ That means:
 - `Scope CH1` = reference channel
 - `Scope CH2` / `CH3` / `CH4` = DUT measurement channels
 
-Important: all oscilloscope channels used in the DUT measurement path must be externally terminated to 50 Ω. The SDS800X HD only provides 1 MΩ inputs and does not offer a built-in 50 Ω input mode, so external 'BNC 50 Ω feed-through terminators' are mandatory for this setup.
+Important: all oscilloscope channels used in the DUT measurement path must be externally terminated to 50 Ω. The SDS800X HD only provides 1 MΩ inputs and does not offer a built-in 50 Ω input mode, so external BNC 50 Ω feed-through terminators are mandatory for this setup.
 
 ### UART And Grounding
 
