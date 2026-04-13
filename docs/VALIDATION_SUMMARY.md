@@ -9,11 +9,8 @@ Target build: `wt32eth_release_final_safe`
 
 - `saveConfig()` now skips physical `Preferences` / `NVS` writes when the current configuration matches the last persisted snapshot.
 - no periodic autosave, background save, or runtime save loop was found in the audited code paths.
-- boot-time automatic writes remain only in three critical categories:
-  - legacy EEPROM to `Preferences` migration
-  - failed configuration load that forces a reset to defaults
-  - critical repair of invalid, corrupted, or incomplete stored configuration that would otherwise prevent coherent boot
-- non-critical normalization is kept in RAM until the user explicitly saves.
+- boot-time automatic writes were removed from the audited release path.
+- missing, incomplete, incompatible, or invalid stored configuration is now repaired only in RAM until the user explicitly saves.
 
 ## Final Network Defaults
 
@@ -33,8 +30,8 @@ The final release build was rebuilt cleanly with:
 Observed result:
 
 - `SUCCESS`
-- RAM usage: `98700 / 327680` (`30.1%`)
-- Flash usage: `960253 / 1310720` (`73.3%`)
+- RAM usage: `98756 / 327680` (`30.1%`)
+- Flash usage: `964589 / 1310720` (`73.6%`)
 
 ## Hardware Evidence
 
@@ -64,22 +61,22 @@ Observed live runtime / UI evidence after the board rejoined the bench WiFi:
 
 Observed real save behavior through the final Web UI:
 
-- POST `/save` for `service_limits` with unchanged values returned `No changes saved`
-- POST `/save` changing `max_web_ui_clients` from `6` to `7` returned `Configuration saved`
-- a follow-up GET `/network` reflected `max_web_ui_clients = 7`
-- POST `/save` restoring `max_web_ui_clients` from `7` back to `6` returned `Configuration saved`
-- a follow-up GET `/network` reflected `max_web_ui_clients = 6`
+- the first explicit `POST /save` on unchanged Bode values persisted the temporary RAM recovery configuration into `NVS`
+- a second explicit `POST /save` with the same values returned `No changes saved`
+- an explicit `POST /save` changing `friendly_name` returned `Configuration saved`
+- an explicit restore of the original `friendly_name` also returned `Configuration saved`
+- a reboot after those tests reported `stored_config_valid=yes loaded_from_nvs=yes ram_recovery=no save_required=no reason=none`
 
 ## Coverage Limits In This Pass
 
 - The live scope browser workflow on port `100` and the live noVNC workflow on port `5900` were not re-driven end-to-end in this exact final pass.
 - Deliberate corruption of stored configuration was not forced on hardware in this pass because it would require destructive manipulation of `NVS`; that path was audited in code, while first boot on erased `NVS` was reproduced for real.
-- Auxiliary environments `wt32eth_bringup_safe` and `wt32eth_final_test_safe` were not re-flashed in this final pass.
+- `wt32eth_final_test_safe` was rebuilt successfully in this publish pass.
+- `wt32eth_bringup_safe` was not fully revalidated in this publish pass because the local PlatformIO workspace hit a `.sconsign312.dblite` artifact error outside the release firmware path.
 
-## Local Validation Reports
+## Publish-Pass Notes
 
-Detailed local audit and validation notes for this pass are recorded in:
+The publish-pass validation summary is reflected in:
 
-- `debug/final_nvs_policy_audit.txt`
-- `debug/final_default_network_policy.txt`
-- `debug/final_release_validation.txt`
+- [../RELEASE_NOTES.md](../RELEASE_NOTES.md)
+- the current release workflow and staging notes in [../release/README.md](../release/README.md)

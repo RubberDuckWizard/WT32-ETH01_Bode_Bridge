@@ -21,10 +21,12 @@ pio device monitor -b 115200 -p COMx
 
 ## Precompiled Application Update
 
-Use this when the module already has a compatible bootloader and partition layout from this project or from a previous PlatformIO flash of the same board profile:
+Use this when the module already has a compatible bootloader and partition layout from this project or from a previous PlatformIO flash of the same board profile.
+
+Download the release assets from the GitHub Releases page, or generate them locally with `python scripts/build_bins.py -e wt32eth_release_final_safe --clean`. The examples below assume those downloaded files are stored in a local folder named `release-assets/`.
 
 ```bash
-esptool.py --chip esp32 --port COMx --baud 460800 write_flash 0x10000 release/wt32eth_release_final_safe/app.bin
+esptool.py --chip esp32 --port COMx --baud 460800 write_flash 0x10000 release-assets/wt32eth_release_final_safe-app.bin
 ```
 
 This is the least invasive precompiled update path and is the recommended way to update an already prepared board.
@@ -35,30 +37,18 @@ Use this when the board is blank, the existing flash layout is unknown, or you w
 
 ```bash
 esptool.py --chip esp32 --port COMx --baud 460800 write_flash ^
-  0x1000 release/wt32eth_release_final_safe/bootloader.bin ^
-  0x8000 release/wt32eth_release_final_safe/partitions.bin ^
-  0x10000 release/wt32eth_release_final_safe/app.bin
+  0x1000 release-assets/wt32eth_release_final_safe-bootloader.bin ^
+  0x8000 release-assets/wt32eth_release_final_safe-partitions.bin ^
+  0x10000 release-assets/wt32eth_release_final_safe-app.bin
 ```
 
 PowerShell one-line equivalent:
 
 ```powershell
-esptool.py --chip esp32 --port COMx --baud 460800 write_flash 0x1000 release/wt32eth_release_final_safe/bootloader.bin 0x8000 release/wt32eth_release_final_safe/partitions.bin 0x10000 release/wt32eth_release_final_safe/app.bin
+esptool.py --chip esp32 --port COMx --baud 460800 write_flash 0x1000 release-assets/wt32eth_release_final_safe-bootloader.bin 0x8000 release-assets/wt32eth_release_final_safe-partitions.bin 0x10000 release-assets/wt32eth_release_final_safe-app.bin
 ```
 
-## Auxiliary Build Flashing
-
-Recovery build:
-
-```bash
-esptool.py --chip esp32 --port COMx --baud 460800 write_flash 0x10000 release/wt32eth_bringup_safe/app.bin
-```
-
-FY6900 service build:
-
-```bash
-esptool.py --chip esp32 --port COMx --baud 460800 write_flash 0x10000 release/wt32eth_final_test_safe/app.bin
-```
+Auxiliary safe builds can still be generated from source locally when needed, but they are not required for the main public release update.
 
 ## Boot And Recovery Notes
 

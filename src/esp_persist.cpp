@@ -13,6 +13,9 @@ static EspConfig s_persisted_config;
 static bool s_persisted_config_known = false;
 static bool s_store_needs_commit = false;
 static bool s_last_save_wrote = false;
+static bool s_config_loaded_from_nvs_ok = false;
+static bool s_config_running_from_ram_recovery = false;
+static char s_last_config_error_reason[48] = "none";
 
 namespace {
 
@@ -102,32 +105,43 @@ static bool config_equals(const EspConfig &left, const EspConfig &right)
     return memcmp(&left, &right, sizeof(EspConfig)) == 0;
 }
 
-static void remember_persisted_config(const EspConfig &cfg)
+static void set_config_error_reason(const char *reason)
+{
+    if (reason == NULL || reason[0] == '\0') {
+        reason = "none";
+    }
+    strncpy(s_last_config_error_reason, reason, sizeof(s_last_config_error_reason) - 1u);
+    s_last_config_error_reason[sizeof(s_last_config_error_reason) - 1u] = '\0';
+}
+
+static void clear_config_error_reason(void)
+{
+    set_config_error_reason("none");
+}
+
+static void cache_persisted_config(const EspConfig &cfg)
 {
     s_persisted_config = cfg;
     s_persisted_config_known = true;
-    s_store_needs_commit = false;
 }
 
-static bool normalize_flags_require_boot_save(uint32_t flags)
+static void remember_persisted_config(const EspConfig &cfg)
 {
-    const uint32_t critical = kNormalizeVersion
-        | kNormalizeApSsid
-        | kNormalizeApPassword
-        | kNormalizeAwgSerialMode
-        | kNormalizeAwgBaud
-        | kNormalizeAwgFamily
-        | kNormalizeScopePort
-        | kNormalizeScopeTimeout
-        | kNormalizeScopeProbe
-        | kNormalizeVxiTimeout
-        | kNormalizeAwgTimeout
-        | kNormalizeWiFiTuple
-        | kNormalizeLanTuple
-        | kNormalizeScopeIp
-        | kNormalizeWiFiLanConflict;
+    cache_persisted_config(cfg);
+    s_store_was_valid = true;
+    s_config_loaded_from_nvs_ok = true;
+    s_config_running_from_ram_recovery = false;
+    s_store_needs_commit = false;
+    clear_config_error_reason();
+}
 
-    return (flags & critical) != 0u;
+static void mark_running_from_ram_recovery(const char *reason, bool save_required)
+{
+    s_store_was_valid = false;
+    s_config_loaded_from_nvs_ok = false;
+    s_config_running_from_ram_recovery = true;
+    s_store_needs_commit = save_required;
+    set_config_error_reason(reason);
 }
 
 static uint32_t ip_to_u32(const uint8_t *ip4)
@@ -532,7 +546,50 @@ static void write_ip_pref(const char *key, const uint8_t *src)
     s_prefs.putBytes(key, src, kIpv4Len);
 }
 
-static bool migrate_legacy_eeprom()
+static bool prefs_has_required_keys()
+{
+    static const char *const kRequiredScalarKeys[] = {
+        "version", "dhcp", "recovery_ap", "scope_proxy",
+        "web_max", "proxy_max", "vnc_max",
+        "scope_port", "scope_conn_to", "scope_probe_ms", "vxi_to",
+        "fy_to", "auto_off", "fy_baud", "fy_family"
+    };
+    static const char *const kRequiredIpKeys[] = {
+        "local_ip", "subnet", "gateway", "dns1", "dns2",
+        "lan_ip", "lan_mask", "scope_ip"
+    };
+    static const char *const kRequiredTextKeys[] = {
+        "hostname", "ssid", "password", "ap_ssid", "ap_password",
+        "ntp_host", "friendly", "idn_name", "fy_mode"
+    };
+
+    for (size_t i = 0; i < sizeof(kRequiredScalarKeys) / sizeof(kRequiredScalarKeys[0]); ++i) {
+        if (!s_prefs.isKey(kRequiredScalarKeys[i])) {
+            return false;
+        }
+    }
+    for (size_t i = 0; i < sizeof(kRequiredIpKeys) / sizeof(kRequiredIpKeys[0]); ++i) {
+        if (!s_prefs.isKey(kRequiredIpKeys[i])) {
+            return false;
+        }
+    }
+    for (size_t i = 0; i < sizeof(kRequiredTextKeys) / sizeof(kRequiredTextKeys[0]); ++i) {
+        if (!s_prefs.isKey(kRequiredTextKeys[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static const char *classify_normalize_reason(uint32_t normalize_flags)
+{
+    if ((normalize_flags & kNormalizeVersion) != 0u) {
+        return "incompatible_config_in_nvs";
+    }
+    return "invalid_or_corrupted_config_in_nvs";
+}
+
+static bool load_legacy_eeprom_to_ram()
 {
     LegacyConfig legacy;
 
@@ -556,9 +613,7 @@ static bool migrate_legacy_eeprom()
     g_config.awg_baud = legacy.awg_baud;
     g_config.awg_firmware_family = legacy.awg_firmware_family;
 
-    s_store_needs_commit = true;
     (void)normalize_config(&g_config);
-    (void)saveConfig();
     return true;
 }
 
@@ -607,42 +662,52 @@ static void load_from_preferences()
 bool loadConfig()
 {
     uint32_t normalize_flags;
+    bool has_required_keys = false;
+    EspConfig raw_loaded_config;
 
     set_default_config(&g_config);
     s_store_was_valid = false;
+    s_config_loaded_from_nvs_ok = false;
+    s_config_running_from_ram_recovery = false;
     s_store_needs_commit = false;
     s_persisted_config_known = false;
     s_last_save_wrote = false;
+    clear_config_error_reason();
 
     if (!s_prefs.begin(kPrefsNamespace, false)) {
+        mark_running_from_ram_recovery("preferences_open_failed", true);
         return false;
     }
 
     if (!s_prefs.isKey("version")) {
         s_prefs.end();
-        if (migrate_legacy_eeprom()) {
-            s_store_was_valid = true;
-            return true;
+        if (load_legacy_eeprom_to_ram()) {
+            mark_running_from_ram_recovery("incompatible_legacy_config", true);
+            return false;
         }
         set_default_config(&g_config);
+        mark_running_from_ram_recovery("config_missing_in_nvs", true);
         return false;
     }
 
+    has_required_keys = prefs_has_required_keys();
     load_from_preferences();
+    raw_loaded_config = g_config;
     s_prefs.end();
 
     normalize_flags = normalize_config(&g_config);
-    s_store_was_valid = normalize_flags == kNormalizeNone;
-    if (s_store_was_valid) {
+    if (has_required_keys && normalize_flags == kNormalizeNone) {
         remember_persisted_config(g_config);
         return true;
     }
 
-    s_store_needs_commit = true;
-    if (normalize_flags_require_boot_save(normalize_flags)) {
-        (void)saveConfig();
+    cache_persisted_config(raw_loaded_config);
+    if (!has_required_keys) {
+        mark_running_from_ram_recovery("incomplete_config_in_nvs", true);
+    } else {
+        mark_running_from_ram_recovery(classify_normalize_reason(normalize_flags), true);
     }
-    return true;
+    return false;
 }
 
 bool saveConfig()
@@ -718,6 +783,26 @@ bool config_store_needs_commit()
     return s_store_needs_commit;
 }
 
+bool config_loaded_from_nvs_ok()
+{
+    return s_config_loaded_from_nvs_ok;
+}
+
+bool config_running_from_ram_recovery()
+{
+    return s_config_running_from_ram_recovery;
+}
+
+bool config_save_required()
+{
+    return s_store_needs_commit;
+}
+
+const char *config_last_error_reason()
+{
+    return s_last_config_error_reason;
+}
+
 bool config_last_save_wrote()
 {
     return s_last_save_wrote;
@@ -751,10 +836,7 @@ bool config_has_valid_sta_settings()
 
 void config_init()
 {
-    if (!loadConfig()) {
-        resetConfigToDefaults();
-        (void)saveConfig();
-    }
+    (void)loadConfig();
 }
 
 bool config_load()
@@ -770,4 +852,9 @@ void config_save()
 void config_reset_defaults()
 {
     resetConfigToDefaults();
+}
+
+void config_mark_running_from_ram_recovery(const char *reason, bool save_required)
+{
+    mark_running_from_ram_recovery(reason, save_required);
 }

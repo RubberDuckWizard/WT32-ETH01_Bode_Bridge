@@ -73,16 +73,18 @@ void setup()
         g_config.wifi_ssid[0] = '\0';
         g_config.wifi_password[0] = '\0';
         g_config.recovery_ap_enable = 1;
+        config_mark_running_from_ram_recovery("stored_config_ignored_by_build", false);
         Serial.printf("safe bring-up: ignoring stored config and forcing recovery AP\r\n");
     } else {
-        if (!loadConfig()) {
-            resetConfigToDefaults();
-            (void)saveConfig();
-        }
+        (void)loadConfig();
     }
 
-    Serial.printf("stored_config_valid=%s hostname=%s dhcp=%s heap=%lu\r\n",
+    Serial.printf("stored_config_valid=%s loaded_from_nvs=%s ram_recovery=%s save_required=%s reason=%s hostname=%s dhcp=%s heap=%lu\r\n",
         config_store_was_valid() ? "yes" : "no",
+        config_loaded_from_nvs_ok() ? "yes" : "no",
+        config_running_from_ram_recovery() ? "yes" : "no",
+        config_save_required() ? "yes" : "no",
+        config_last_error_reason(),
         g_config.device_hostname,
         g_config.use_dhcp ? "on" : "off",
         (unsigned long)ESP.getFreeHeap());

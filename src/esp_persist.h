@@ -53,6 +53,11 @@ bool config_store_needs_commit();
 bool config_last_save_wrote();
 bool config_current_is_valid();
 bool config_has_valid_sta_settings();
+bool config_loaded_from_nvs_ok();
+bool config_running_from_ram_recovery();
+bool config_save_required();
+const char *config_last_error_reason();
+void config_mark_running_from_ram_recovery(const char *reason, bool save_required);
 
 void config_init();
 bool config_load();

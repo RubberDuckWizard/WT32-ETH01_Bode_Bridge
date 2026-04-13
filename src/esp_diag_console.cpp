@@ -141,6 +141,11 @@ static void cmd_status(void)
         config_current_is_valid() ? "yes" : "no",
         g_config.use_dhcp ? "on" : "off",
         g_config.device_hostname);
+    diag_printf("cfg loaded_from_nvs=%s ram_recovery=%s save_required=%s reason=%s\r\n",
+        config_loaded_from_nvs_ok() ? "yes" : "no",
+        config_running_from_ram_recovery() ? "yes" : "no",
+        config_save_required() ? "yes" : "no",
+        config_last_error_reason());
     diag_printf("limits web=%u http=%u vnc=%u\r\n",
         (unsigned)g_config.max_web_ui_clients,
         (unsigned)g_config.max_scope_http_proxy_clients,
@@ -179,11 +184,15 @@ static void cmd_eth(void)
 
 static void cmd_cfg_show(void)
 {
-    diag_printf("stored_valid=%s pending_commit=%s current_crc=%s version=%u\r\n",
+    diag_printf("stored_valid=%s save_required=%s current_crc=%s version=%u\r\n",
         config_store_was_valid() ? "yes" : "no",
-        config_store_needs_commit() ? "yes" : "no",
+        config_save_required() ? "yes" : "no",
         config_current_is_valid() ? "yes" : "no",
         g_config.version);
+    diag_printf("loaded_from_nvs=%s ram_recovery=%s reason=%s\r\n",
+        config_loaded_from_nvs_ok() ? "yes" : "no",
+        config_running_from_ram_recovery() ? "yes" : "no",
+        config_last_error_reason());
     diag_printf("hostname=%s friendly=%s idn=%s dhcp=%s\r\n",
         g_config.device_hostname,
         g_config.friendly_name,
@@ -497,6 +506,11 @@ void diag_setup(void)
     diag_printf("\r\nespBode %s\r\n", FW_VARIANT_NAME);
     diag_printf("build: %s\r\n", FW_BUILD_STRING);
     diag_printf("stored config valid: %s\r\n", config_store_was_valid() ? "yes" : "no");
+    diag_printf("loaded_from_nvs=%s ram_recovery=%s save_required=%s reason=%s\r\n",
+        config_loaded_from_nvs_ok() ? "yes" : "no",
+        config_running_from_ram_recovery() ? "yes" : "no",
+        config_save_required() ? "yes" : "no",
+        config_last_error_reason());
     diag_printf("eth: link=%s connected=%s ip=%s mac=%s\r\n",
         eth_link_is_up() ? "up" : "down",
         eth_is_connected() ? "yes" : "no",

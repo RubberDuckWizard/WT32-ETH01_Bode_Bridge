@@ -1,8 +1,10 @@
 # Release Artifacts
 
-## Primary Runtime
+The `release/` directory is a local staging area produced by `scripts/build_bins.py`.
 
-Main public build:
+Generated binaries placed here are ignored by Git and are intended to be uploaded as GitHub Release assets, not committed into the repository history.
+
+## Primary Runtime
 
 - `wt32eth_release_final_safe/app.bin`
 
@@ -13,26 +15,24 @@ Supporting files for clean manual flashing:
 
 ## Auxiliary Builds
 
-- `wt32eth_bringup_safe/app.bin`
-  Recovery-oriented auxiliary build
-- `wt32eth_final_test_safe/app.bin`
-  FY6900 service-oriented auxiliary build
+- Auxiliary builds can still be generated locally from source when needed, but the public release flow centers on the primary runtime build above.
 
 ## Which File To Use
 
 - Use `wt32eth_release_final_safe/app.bin` for normal updates when the target already has a compatible bootloader and partition table.
 - Use the primary build's `bootloader.bin`, `partitions.bin`, and `app.bin` together for a clean manual flash.
-- Use the auxiliary build binaries only when you explicitly need recovery or FY6900 service behavior.
+- For published binaries, prefer the attached GitHub Release assets so users get unique filenames and a coherent checksum set.
 
 ## Checksums
 
-`SHA256SUMS.txt` contains SHA-256 hashes for the binary artifacts exported by the packaging script.
+`SHA256SUMS.txt` contains SHA-256 hashes for the locally staged artifacts that are intended for the corresponding GitHub Release upload.
 
 ## Final Runtime Policy
 
 - the final release keeps normal `Preferences` / `NVS` writes user-driven
 - identical saves are treated as no-op saves and do not rewrite flash
-- boot-time automatic writes are reserved for legacy migration, failed config load recovery, or a critical repair of invalid stored configuration
+- invalid, incomplete, or incompatible stored configuration is repaired only in RAM until the user explicitly saves it
+- boot-time automatic writes are no longer used for migration, first boot, config repair, or recovery fallback
 
 ## Final Default Network Roles
 

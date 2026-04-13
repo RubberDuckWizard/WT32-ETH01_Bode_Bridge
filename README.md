@@ -155,15 +155,16 @@ Final default network policy in the release build:
 - normal `Preferences` / `NVS` writes happen only on explicit user actions such as `Save` in the Web UI or `Factory reset`
 - `Save` with an unchanged resulting configuration is a no-op and reports `No changes saved` instead of rewriting flash
 - there is no periodic autosave, background save, or runtime save loop in the final main build
-- boot-time automatic writes are kept only for critical cases: legacy migration, failed configuration load, or a critical repair that is needed to make the stored configuration coherent enough to boot correctly
-- minor normalization that does not block coherent operation stays in RAM until the user performs an explicit save
+- there are no automatic `NVS` writes at boot, on first boot, on invalid/corrupted config detection, during normalization, or during recovery fallback
+- if the stored configuration is missing, incomplete, incompatible, or invalid, the firmware repairs only the in-memory runtime copy and keeps that temporary configuration in RAM until the user explicitly saves it
+- when that fail-safe RAM recovery path is active, the Web UI shows that the device is running with a temporary recovery configuration and that nothing has been written to `NVS` yet
 
 Behavior on clean NVS / first boot:
 
 - WiFi STA comes up in DHCP mode by default
 - the dedicated LAN stays static on `10.11.13.221/24`
 - the recovery AP stays available on `192.168.4.1/24`
-- a single boot-time commit is still allowed if essential defaults or migration data must be materialized into `NVS`
+- no boot-time commit is performed; the safe runtime config stays in RAM until the user presses `Save`
 
 ## Build Variants Kept
 
@@ -311,10 +312,10 @@ pio run -e wt32eth_bringup_safe
 pio run -e wt32eth_final_test_safe
 ```
 
-Export tracked release binaries:
+Export local release-staging binaries:
 
 ```bash
-python scripts/build_bins.py
+python scripts/build_bins.py -e wt32eth_release_final_safe --clean
 ```
 
 Detailed instructions:
@@ -322,11 +323,13 @@ Detailed instructions:
 - [BUILDING.md](BUILDING.md)
 - [FLASHING.md](FLASHING.md)
 
-The main prebuilt firmware artifacts are kept in:
+The main prebuilt firmware artifacts are published as GitHub Release assets:
 
-- [release/wt32eth_release_final_safe/app.bin](release/wt32eth_release_final_safe/app.bin)
-- [release/wt32eth_release_final_safe/bootloader.bin](release/wt32eth_release_final_safe/bootloader.bin)
-- [release/wt32eth_release_final_safe/partitions.bin](release/wt32eth_release_final_safe/partitions.bin)
+- [`wt32eth_release_final_safe-app.bin`](https://github.com/RubberDuckWizard/WT32-ETH01_Bode_Bridge/releases)
+- [`wt32eth_release_final_safe-bootloader.bin`](https://github.com/RubberDuckWizard/WT32-ETH01_Bode_Bridge/releases)
+- [`wt32eth_release_final_safe-partitions.bin`](https://github.com/RubberDuckWizard/WT32-ETH01_Bode_Bridge/releases)
+
+The local `release/` directory is used only as a Git-ignored staging area when preparing a new GitHub Release from source.
 
 ## Programming, Power, And UART Notes
 
@@ -416,7 +419,9 @@ Final release validation completed locally on `2026-04-13` for `wt32eth_release_
 - erase + flash + boot capture on `COM6` completed successfully
 - first boot after erase showed `stored_config_valid=no`, `dhcp=on`, LAN `10.11.13.221/24`, recovery AP `192.168.4.1`, and both proxy listeners active
 - live Web UI access was verified at `http://192.168.91.157/`
-- a real Web UI save with unchanged `service_limits` returned `No changes saved`
-- a real Web UI save changing `max_web_ui_clients` from `6` to `7` returned `Configuration saved`, and `/network` reflected the new stored value
-- the value was restored from `7` back to `6`, again through the final Web UI, and `/network` reflected the restored default
+- the first explicit Web UI save persisted the temporary RAM recovery configuration into `NVS`
+- a second explicit Web UI save with unchanged Bode values returned `No changes saved`
+- a real Web UI save changing `friendly_name` returned `Configuration saved`
+- the original `friendly_name` was restored through a final explicit save
+- a software reboot after the save tests reported `loaded_from_nvs=yes`, `ram_recovery=no`, and `save_required=no`
 - the runtime status page stayed healthy after the tests: LAN active, WiFi STA connected, AP active, time synced, scope reachable, HTTP proxy listening, and noVNC proxy listening

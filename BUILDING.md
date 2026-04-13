@@ -37,27 +37,27 @@ pio run -e wt32eth_final_test_safe
 
 ## Release Artifact Generation
 
-Generate the tracked release assets after the builds succeed:
+Generate local release-staging assets after the builds succeed:
 
 ```bash
-python scripts/build_bins.py
+python scripts/build_bins.py -e wt32eth_release_final_safe
 ```
 
 Clean and rebuild before exporting release assets:
 
 ```bash
-python scripts/build_bins.py --clean
+python scripts/build_bins.py -e wt32eth_release_final_safe --clean
 ```
 
-The script copies the relevant files into `release/` and also writes `release/SHA256SUMS.txt`.
+The script copies the selected firmware files into the local `release/` staging directory and also writes `release/SHA256SUMS.txt`.
+
+These generated binaries are intended for GitHub Release assets and are ignored by Git. They should not be committed back into the source tree.
 
 Generated structure:
 
 - `release/wt32eth_release_final_safe/app.bin`
 - `release/wt32eth_release_final_safe/bootloader.bin`
 - `release/wt32eth_release_final_safe/partitions.bin`
-- `release/wt32eth_bringup_safe/app.bin`
-- `release/wt32eth_final_test_safe/app.bin`
 - `release/SHA256SUMS.txt`
 
 ## Validation Baseline

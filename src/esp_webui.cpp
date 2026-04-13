@@ -420,6 +420,80 @@ static uint8_t clamp_web_service_limit(uint32_t value)
     return (uint8_t)value;
 }
 
+static String format_duration_compact_ms(uint32_t ms)
+{
+    uint32_t total_minutes = ms / 60000UL;
+    uint32_t total_hours = total_minutes / 60UL;
+    uint32_t days = total_hours / 24UL;
+    uint32_t hours = total_hours % 24UL;
+    uint32_t minutes = total_minutes % 60UL;
+
+    if (total_minutes == 0u) {
+        return String(F("<1 min"));
+    }
+    if (total_hours == 0u) {
+        return String(total_minutes) + F(" min");
+    }
+    if (days == 0u) {
+        return String(total_hours) + F("h ") + String(minutes) + F("m");
+    }
+    return String(days) + F("d ") + String(hours) + F("h ") + String(minutes) + F("m");
+}
+
+static String format_event_timestamp_ms(uint32_t event_ms)
+{
+    uint32_t now = millis();
+
+    if (event_ms == 0u) {
+        return String(F("never"));
+    }
+    if (now < event_ms) {
+        return format_duration_compact_ms(event_ms);
+    }
+    return format_duration_compact_ms(now - event_ms) + F(" ago");
+}
+
+static String format_heap_bytes(size_t bytes)
+{
+    double value = (double)bytes;
+    const char *unit = "B";
+    char buf[24];
+
+    if (value >= 1024.0 * 1024.0 * 1024.0) {
+        value /= 1024.0 * 1024.0 * 1024.0;
+        unit = "GB";
+    } else if (value >= 1024.0 * 1024.0) {
+        value /= 1024.0 * 1024.0;
+        unit = "MB";
+    } else if (value >= 1024.0) {
+        value /= 1024.0;
+        unit = "KB";
+    }
+
+    if (strcmp(unit, "B") == 0) {
+        snprintf(buf, sizeof(buf), "%lu %s", (unsigned long)bytes, unit);
+    } else if (value >= 100.0) {
+        snprintf(buf, sizeof(buf), "%.0f %s", value, unit);
+    } else {
+        snprintf(buf, sizeof(buf), "%.1f %s", value, unit);
+    }
+    return String(buf);
+}
+
+static const char *rssi_quality_text(int32_t rssi)
+{
+    if (rssi > -65) {
+        return "Good";
+    }
+    if (rssi > -75) {
+        return "Fair";
+    }
+    if (rssi > -85) {
+        return "Low";
+    }
+    return "Poor";
+}
+
 static void append_html_escaped(String &out, const char *text)
 {
     if (text == NULL || text[0] == '\0') {
@@ -439,6 +513,8 @@ static void append_html_escaped(String &out, const char *text)
         ++text;
     }
 }
+
+static const char *config_reason_label(const char *reason);
 
 static void append_ui_endpoints(String &page)
 {
@@ -501,7 +577,7 @@ static void append_page_start(String &page, const char *title)
               "nav a{color:var(--ink);text-decoration:none;background:rgba(255,255,255,.78);border:1px solid var(--line);padding:8px 12px;border-radius:999px;font-size:.96rem;font-weight:600;}"
               "nav a.active{background:var(--accent);border-color:var(--accent);color:#fff;}"
               ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;align-items:start;}"
-              ".summary-grid{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));}"
+              ".summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));}"
               ".card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:0 8px 22px rgba(23,32,42,.06);min-width:0;}"
               ".card h2,.card h3{margin:0 0 10px;font-size:1.08rem;line-height:1.35;}"
               ".muted{color:var(--soft);}"
@@ -537,6 +613,12 @@ static void append_page_start(String &page, const char *title)
               "</script></head><body><div class='wrap'><section class='hero'><h1>WT32 Bode Bridge</h1><p>");
     append_html_escaped(page, title);
     page += F("</p></section>");
+
+    if (config_running_from_ram_recovery()) {
+        page += F("<div class='banner'>Running with temporary recovery configuration. Nothing has been written to NVS. Press Save to persist. Reason: ");
+        page += config_reason_label(config_last_error_reason());
+        page += F(".</div>");
+    }
 
     if (runtime_net_recovery_ap_active()) {
 #if FW_KEEP_RECOVERY_AP_ALWAYS_ON
@@ -628,8 +710,40 @@ static const char *runtime_fail_reason_label(const char *reason)
     return reason;
 }
 
+static const char *config_reason_label(const char *reason)
+{
+    if (reason == NULL || reason[0] == '\0' || strcmp(reason, "none") == 0) {
+        return "none";
+    }
+    if (strcmp(reason, "config_missing_in_nvs") == 0) {
+        return "missing config in NVS";
+    }
+    if (strcmp(reason, "preferences_open_failed") == 0) {
+        return "Preferences/NVS open failed";
+    }
+    if (strcmp(reason, "incomplete_config_in_nvs") == 0) {
+        return "incomplete config in NVS";
+    }
+    if (strcmp(reason, "incompatible_config_in_nvs") == 0) {
+        return "incompatible config in NVS";
+    }
+    if (strcmp(reason, "invalid_or_corrupted_config_in_nvs") == 0) {
+        return "invalid or corrupted config in NVS";
+    }
+    if (strcmp(reason, "incompatible_legacy_config") == 0) {
+        return "legacy config loaded in RAM only";
+    }
+    if (strcmp(reason, "stored_config_ignored_by_build") == 0) {
+        return "stored config ignored by current build";
+    }
+    return reason;
+}
+
 static String runtime_status_detail(void)
 {
+    if (config_running_from_ram_recovery()) {
+        return String(F("Running with temporary recovery configuration in RAM"));
+    }
     if (runtime_net_lan_has_ip() && runtime_net_sta_connected() && runtime_net_recovery_ap_active()) {
         return String(F("LAN active, WiFi STA connected, AP active"));
     }
@@ -823,6 +937,30 @@ static void append_summary_cards(String &page)
     page += String((unsigned)scope_vnc_proxy_listen_port());
     page += F("</span></div></article>");
 
+    page += F("<article class='card'><h2>Scope / FY6900</h2><div class='kv'><b>Scope probe</b><span>");
+    if (!runtime_net_scope_probe_available()) {
+        page += F("not active");
+    } else {
+        page += runtime_net_scope_reachable() ? F("reachable") : F("unreachable");
+    }
+    page += F("</span><b>Scope IP</b><span>");
+    page += ip_to_str(g_config.scope_ip);
+    page += F(":");
+    page += String((unsigned)g_config.scope_port);
+    page += F("</span><b>FY baud</b><span>");
+    page += String((unsigned long)fy_get_baud());
+    page += F("</span><b>FY serial</b><span>");
+    page += fy_get_serial_mode();
+    page += F("</span><b>FY status</b><span>");
+    page += fy_status_text();
+    page += F("</span><b>FY enabled</b><span>");
+    page += fy_is_enabled() ? F("yes") : F("no");
+    page += F("</span><b>Proxy clients</b><span>");
+    page += String((unsigned)scope_http_proxy_get_stats()->active_connections);
+    page += F("</span><b>noVNC clients</b><span>");
+    page += String((unsigned)scope_vnc_proxy_get_stats()->active_connections);
+    page += F("</span></div></article>");
+
     page += F("<article class='card'><h2>WiFi / AP</h2><div class='kv'><b>STA config</b><span>");
     page += runtime_net_sta_config_valid() ? F("valid") : F("missing or invalid");
     page += F("</span><b>STA mode</b><span>");
@@ -877,30 +1015,6 @@ static void append_summary_cards(String &page)
     page += runtime_net_ap_ip().toString();
     page += F("</span><b>Last fail</b><span>");
     page += runtime_fail_reason_label(runtime_net_last_fail_reason());
-    page += F("</span></div></article>");
-
-    page += F("<article class='card'><h2>Scope / FY6900</h2><div class='kv'><b>Scope probe</b><span>");
-    if (!runtime_net_scope_probe_available()) {
-        page += F("not active");
-    } else {
-        page += runtime_net_scope_reachable() ? F("reachable") : F("unreachable");
-    }
-    page += F("</span><b>Scope IP</b><span>");
-    page += ip_to_str(g_config.scope_ip);
-    page += F(":");
-    page += String((unsigned)g_config.scope_port);
-    page += F("</span><b>FY baud</b><span>");
-    page += String((unsigned long)fy_get_baud());
-    page += F("</span><b>FY serial</b><span>");
-    page += fy_get_serial_mode();
-    page += F("</span><b>FY status</b><span>");
-    page += fy_status_text();
-    page += F("</span><b>FY enabled</b><span>");
-    page += fy_is_enabled() ? F("yes") : F("no");
-    page += F("</span><b>Proxy clients</b><span>");
-    page += String((unsigned)scope_http_proxy_get_stats()->active_connections);
-    page += F("</span><b>noVNC clients</b><span>");
-    page += String((unsigned)scope_vnc_proxy_get_stats()->active_connections);
     page += F("</span></div></article></section>");
 }
 
@@ -940,8 +1054,8 @@ static void append_fy_diag_section(String &page)
     page += F(" #");
     page += String((unsigned long)diag.operation_count);
     page += F(" @ ");
-    page += String((unsigned long)diag.last_operation_ms);
-    page += F(" ms</td></tr><tr><td>Last error</td><td>");
+    page += format_event_timestamp_ms(diag.last_operation_ms);
+    page += F("</td></tr><tr><td>Last error</td><td>");
     append_html_escaped(page, diag.last_error[0] ? diag.last_error : "none");
     page += F("</td></tr><tr><td>Last response kind</td><td>");
     append_html_escaped(page, diag.last_response_kind[0] ? diag.last_response_kind : "unknown");
@@ -1020,8 +1134,8 @@ static void append_fy_diag_snapshot_html(String &page)
     page += F(" #");
     page += String((unsigned long)diag.operation_count);
     page += F(" @ ");
-    page += String((unsigned long)diag.last_operation_ms);
-    page += F(" ms<br>Last error: ");
+    page += format_event_timestamp_ms(diag.last_operation_ms);
+    page += F("<br>Last error: ");
     append_html_escaped(page, diag.last_error[0] ? diag.last_error : "none");
     page += F("<br>Last response kind: ");
     append_html_escaped(page, diag.last_response_kind[0] ? diag.last_response_kind : "unknown");
@@ -1168,6 +1282,7 @@ static void append_protocol_diag_section(String &page)
     const NetStats *stats = net_get_stats();
     const ScopeHttpProxyStats *http_stats = scope_http_proxy_get_stats();
     const ScopeVncProxyStats *vnc_stats = scope_vnc_proxy_get_stats();
+    String snapshot_uptime = format_duration_compact_ms(millis());
     char buf[192];
 
     page += F("<section class='card'><h2>Protocol Diagnostics</h2>");
@@ -1178,13 +1293,13 @@ static void append_protocol_diag_section(String &page)
 
     page += F("<p class='muted'>This section tracks RPC/VXI session state. HTTP proxy and noVNC clients are separate runtime counters.</p><pre>");
     snprintf(buf, sizeof(buf),
-        "snapshot_ms=%lu\ncurrent_vxi_port=%u\nvxi_session_active=%s\nlast_event=%s\n"
+        "snapshot_uptime=%s\ncurrent_vxi_port=%u\nvxi_session_active=%s\nlast_event=%s\n"
         "http_proxy_active_clients=%u\nnovnc_proxy_active_clients=%u\n"
         "udp_getport_count=%lu\ntcp_getport_count=%lu\ngetport_zero_reply_count=%lu\n"
         "create_link_count=%lu\ndevice_write_count=%lu\ndevice_read_count=%lu\n"
         "destroy_link_count=%lu\nsession_accept_count=%lu\nsession_end_count=%lu\n"
         "session_drop_count=%lu\nunknown_proc_count=%lu\nmalformed_packet_count=%lu\n",
-        (unsigned long)millis(),
+        snapshot_uptime.c_str(),
         stats->current_vxi_port,
         stats->session_active ? "yes" : "no",
         stats->last_event,
@@ -1317,8 +1432,16 @@ static void handle_root(void)
     }
     page += F("</td></tr><tr><td>Offline reason</td><td>");
     page += runtime_status_detail();
-    page += F("</td></tr><tr><td>Build variant</td><td>");
+    page += F("</td></tr><tr><td>Config source</td><td>");
+    page += config_loaded_from_nvs_ok() ? F("stored NVS configuration") : F("temporary RAM recovery configuration");
+    page += F("</td></tr><tr><td>Save required</td><td>");
+    page += config_save_required() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>Config reason</td><td>");
+    page += config_reason_label(config_last_error_reason());
+    page += F("</td></tr><tr><td>Build</td><td>");
     page += FW_VARIANT_NAME;
+    page += F(" / ");
+    page += FW_BUILD_STRING;
     page += F("</td></tr></table></article>");
 
     page += F("<article class='card'><h2>Links</h2>"
@@ -1344,6 +1467,15 @@ static void handle_network_get(void)
     append_page_start(page, "Network");
     append_nav(page, "/network");
     append_summary_cards(page);
+
+    page += F("<section class='card'><h2>Configuration persistence</h2><table>"
+              "<tr><td>Config source</td><td>");
+    page += config_loaded_from_nvs_ok() ? F("stored NVS configuration") : F("temporary RAM recovery configuration");
+    page += F("</td></tr><tr><td>Save required</td><td>");
+    page += config_save_required() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>Reason</td><td>");
+    page += config_reason_label(config_last_error_reason());
+    page += F("</td></tr></table><small>Repair and normalization happen in RAM only. Nothing is written to NVS until you press one of the Save buttons on this page.</small></section>");
 
     page += F("<section class='card'><h2>WiFi STA / AP</h2><form method='post' action='/save'>"
               "<input type='hidden' name='section' value='network'>"
@@ -1631,6 +1763,7 @@ static void handle_bode_get(void)
 static void handle_diag_get(void)
 {
     const WebUiServerStats *web_stats = webconfig_get_stats();
+    int32_t rssi = runtime_net_rssi();
     String page;
     page.reserve(9400);
     append_page_start(page, "Diagnostics");
@@ -1640,13 +1773,19 @@ static void handle_diag_get(void)
 
     page += F("<section class='card'><h2>System</h2><table>");
     page += F("<tr><td>Uptime</td><td>");
-    page += String((unsigned long)millis());
-    page += F(" ms</td></tr><tr><td>Heap</td><td>");
-    page += String((unsigned long)ESP.getFreeHeap());
-    page += F(" bytes</td></tr><tr><td>Reset reason</td><td>");
+    page += format_duration_compact_ms(millis());
+    page += F("</td></tr><tr><td>Heap</td><td>");
+    page += format_heap_bytes(ESP.getFreeHeap());
+    page += F("</td></tr><tr><td>Reset reason</td><td>");
     page += reset_reason_text();
     page += F("</td></tr><tr><td>Runtime status</td><td>");
     page += runtime_status_detail();
+    page += F("</td></tr><tr><td>Config source</td><td>");
+    page += config_loaded_from_nvs_ok() ? F("stored NVS configuration") : F("temporary RAM recovery configuration");
+    page += F("</td></tr><tr><td>Save required</td><td>");
+    page += config_save_required() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>Config reason</td><td>");
+    page += config_reason_label(config_last_error_reason());
     page += F("</td></tr><tr><td>Last network fail</td><td>");
     page += runtime_fail_reason_label(runtime_net_last_fail_reason());
     page += F("</td></tr><tr><td>STA retries</td><td>");
@@ -1671,8 +1810,10 @@ static void handle_diag_get(void)
     page += runtime_net_ap_ip().toString();
     page += F("</td></tr><tr><td>WiFi RSSI</td><td>");
     if (runtime_net_sta_connected()) {
-        page += String((long)runtime_net_rssi());
-        page += F(" dBm");
+        page += String((long)rssi);
+        page += F(" dBm (");
+        page += rssi_quality_text(rssi);
+        page += F(")");
     } else {
         page += F("n/a");
     }
@@ -1711,8 +1852,8 @@ static void handle_diag_get(void)
     page += F("</td></tr><tr><td>NTP rate-limit drops</td><td>");
     page += String((unsigned long)runtime_net_ntp_rate_limit_drop_count());
     page += F("</td></tr><tr><td>Last NTP served</td><td>");
-    page += String((unsigned long)runtime_net_ntp_last_served_ms());
-    page += F(" ms</td></tr></table></section>");
+    page += format_event_timestamp_ms(runtime_net_ntp_last_served_ms());
+    page += F("</td></tr></table></section>");
 
     page += F("<section class='card'><h2>Scope status</h2><table>"
               "<tr><td>Probe enabled</td><td>");
@@ -1720,10 +1861,10 @@ static void handle_diag_get(void)
     page += F("</td></tr><tr><td>Reachable</td><td>");
     page += runtime_net_scope_reachable() ? F("yes") : F("no");
     page += F("</td></tr><tr><td>Last check</td><td>");
-    page += String((unsigned long)runtime_net_scope_last_check_ms());
-    page += F(" ms</td></tr><tr><td>Last success</td><td>");
-    page += String((unsigned long)runtime_net_scope_last_success_ms());
-    page += F(" ms</td></tr><tr><td>HTTP proxy</td><td>");
+    page += format_event_timestamp_ms(runtime_net_scope_last_check_ms());
+    page += F("</td></tr><tr><td>Last success</td><td>");
+    page += format_event_timestamp_ms(runtime_net_scope_last_success_ms());
+    page += F("</td></tr><tr><td>HTTP proxy</td><td>");
     page += scope_proxy_status_text();
     page += F("</td></tr><tr><td>HTTP proxy clients</td><td>");
     page += String((unsigned)scope_http_proxy_get_stats()->active_connections);
@@ -2097,6 +2238,7 @@ static void handle_save_post(void)
     bool ok = true;
     bool network_changed;
     bool fy_changed;
+    bool save_required_before = config_save_required();
 
     if (section == "network") {
         uint8_t ip[4], mask[4], gw[4], dns1[4], dns2[4];
@@ -2368,11 +2510,13 @@ static void handle_save_post(void)
     }
 
     send_message_page("Configuration saved",
-        (network_changed
+        ((save_required_before
+            ? String(F("Config saved to Preferences. Temporary recovery configuration is now persisted. "))
+            : String()) + (network_changed
             ? String(F("Config saved to Preferences. Network changes require a reboot to take effect."))
             : (fy_changed && FW_ENABLE_MANUAL_FY_TEST)
                 ? String(F("Config saved to Preferences. FY changes were not applied automatically in this manual safe build; use the FY manual/final test controls to initialize UART2 on demand."))
-            : String(F("Config saved to Preferences. Safe runtime updates were applied immediately where possible."))) + warning,
+            : String(F("Config saved to Preferences. Safe runtime updates were applied immediately where possible.")))) + warning,
         false,
         save_back_path(section),
         "Back",
@@ -2403,7 +2547,12 @@ static void handle_factory_reset(void)
     }
 
     resetConfigToDefaults();
-    (void)saveConfig();
+    if (!saveConfig()) {
+        send_message_page("Factory reset failed",
+            String(F("Defaults were prepared in RAM, but the explicit Preferences/NVS write failed.")),
+            true, "/", "Back", false);
+        return;
+    }
     send_message_page("Factory reset", String(F("Defaults restored. The device will reboot now.")),
         false, NULL, NULL, false);
     delay(1200);

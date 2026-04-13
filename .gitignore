@@ -6,9 +6,11 @@ backups/
 .venv/
 __pycache__/
 *.py[cod]
+*.pyo
 *.elf
 *.map
-firmware_*.bin
+*.bin
+*.zip
 *.bak
 *.bak1
 *.bak2
@@ -17,10 +19,10 @@ firmware_*.bin
 *.tmp
 /Temp
 
-.vscode/*
-!.vscode/extensions.json
-
+.vscode/
 DOC/
+release/SHA256SUMS.txt
+
 debug/
 
 Thumbs.db
