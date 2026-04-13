@@ -237,6 +237,7 @@
 #endif
 
 #define DEF_DEVICE_HOSTNAME       "wt32-bode"
+#define DEF_NTP_SERVER            "pool.ntp.org"
 #define DEF_FRIENDLY_NAME         "WT32 Bode Bridge"
 #define DEF_IDN_RESPONSE_NAME     "SDG1062X"
 #define DEF_AWG_SERIAL_MODE       "8N2"

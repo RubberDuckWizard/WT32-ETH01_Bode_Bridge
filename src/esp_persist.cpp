@@ -246,6 +246,7 @@ static void set_default_config(EspConfig *cfg)
     copy_text(cfg->wifi_password, sizeof(cfg->wifi_password), DEF_WIFI_PASSWORD);
     copy_text(cfg->ap_ssid, sizeof(cfg->ap_ssid), DEF_RECOVERY_AP_SSID);
     copy_text(cfg->ap_password, sizeof(cfg->ap_password), DEF_RECOVERY_AP_PASSWORD);
+    copy_text(cfg->ntp_server, sizeof(cfg->ntp_server), DEF_NTP_SERVER);
     copy_text(cfg->friendly_name, sizeof(cfg->friendly_name), DEF_FRIENDLY_NAME);
     copy_text(cfg->idn_response_name, sizeof(cfg->idn_response_name), DEF_IDN_RESPONSE_NAME);
     copy_text(cfg->awg_serial_mode, sizeof(cfg->awg_serial_mode), DEF_AWG_SERIAL_MODE);
@@ -270,6 +271,7 @@ static bool normalize_config(EspConfig *cfg)
     cfg->wifi_password[sizeof(cfg->wifi_password) - 1] = '\0';
     cfg->ap_ssid[sizeof(cfg->ap_ssid) - 1] = '\0';
     cfg->ap_password[sizeof(cfg->ap_password) - 1] = '\0';
+    cfg->ntp_server[sizeof(cfg->ntp_server) - 1] = '\0';
     cfg->friendly_name[sizeof(cfg->friendly_name) - 1] = '\0';
     cfg->idn_response_name[sizeof(cfg->idn_response_name) - 1] = '\0';
     cfg->awg_serial_mode[sizeof(cfg->awg_serial_mode) - 1] = '\0';
@@ -284,6 +286,10 @@ static bool normalize_config(EspConfig *cfg)
     }
     if (!recovery_ap_password_is_valid(cfg->ap_password)) {
         copy_text(cfg->ap_password, sizeof(cfg->ap_password), DEF_RECOVERY_AP_PASSWORD);
+        valid = false;
+    }
+    if (!idn_name_is_valid(cfg->ntp_server)) {
+        copy_text(cfg->ntp_server, sizeof(cfg->ntp_server), DEF_NTP_SERVER);
         valid = false;
     }
     if (!safe_ascii_text(cfg->friendly_name, sizeof(cfg->friendly_name) - 1, true)) {
@@ -486,6 +492,7 @@ static void load_from_preferences()
     (void)s_prefs.getString("password", g_config.wifi_password, sizeof(g_config.wifi_password));
     (void)s_prefs.getString("ap_ssid", g_config.ap_ssid, sizeof(g_config.ap_ssid));
     (void)s_prefs.getString("ap_password", g_config.ap_password, sizeof(g_config.ap_password));
+    (void)s_prefs.getString("ntp_host", g_config.ntp_server, sizeof(g_config.ntp_server));
     (void)s_prefs.getString("friendly", g_config.friendly_name, sizeof(g_config.friendly_name));
     (void)s_prefs.getString("idn_name", g_config.idn_response_name, sizeof(g_config.idn_response_name));
     (void)s_prefs.getString("fy_mode", g_config.awg_serial_mode, sizeof(g_config.awg_serial_mode));
@@ -557,6 +564,7 @@ bool saveConfig()
     s_prefs.putString("password", g_config.wifi_password);
     s_prefs.putString("ap_ssid", g_config.ap_ssid);
     s_prefs.putString("ap_password", g_config.ap_password);
+    s_prefs.putString("ntp_host", g_config.ntp_server);
     s_prefs.putString("friendly", g_config.friendly_name);
     s_prefs.putString("idn_name", g_config.idn_response_name);
     s_prefs.putString("fy_mode", g_config.awg_serial_mode);

@@ -281,7 +281,13 @@ static void append_page_start(String &page, const char *title)
               "td:first-child{color:var(--muted);padding-right:16px;width:34%;font-weight:600;}"
               "small{color:var(--soft);display:block;line-height:1.45;}"
               "@media (max-width:760px){.wrap{padding:18px 14px 28px;}.summary-grid{grid-template-columns:1fr;}.kv{grid-template-columns:1fr;}td:first-child{width:auto;padding-right:0;}}"
-              "</style><script>function togglePasswordField(fieldId,toggle){var field=document.getElementById(fieldId);if(field){field.type=toggle.checked?'text':'password';}}</script></head><body><div class='wrap'><section class='hero'><h1>WT32 Bode Bridge</h1><p>");
+              "</style><script>"
+              "function togglePasswordField(fieldId,toggle){var field=document.getElementById(fieldId);if(field){field.type=toggle.checked?'text':'password';}}"
+              "function setSectionVisible(sectionId,visible,displayMode){var section=document.getElementById(sectionId);if(!section)return;section.style.display=visible?(displayMode||'block'):'none';var fields=section.querySelectorAll('input,select,textarea');for(var i=0;i<fields.length;i++){fields[i].disabled=!visible;}}"
+              "function syncWifiStaticFields(){var dhcp=document.querySelector(\"input[name='dhcp'][value='1']\");setSectionVisible('wifi_static_fields',!(dhcp&&dhcp.checked),'grid');}"
+              "function scheduleAutoRefresh(ms){window.setTimeout(function(){window.location.reload();},ms);}"
+              "document.addEventListener('DOMContentLoaded',function(){var radios=document.querySelectorAll(\"input[name='dhcp']\");for(var i=0;i<radios.length;i++){radios[i].addEventListener('change',syncWifiStaticFields);}syncWifiStaticFields();});"
+              "</script></head><body><div class='wrap'><section class='hero'><h1>WT32 Bode Bridge</h1><p>");
     append_html_escaped(page, title);
     page += F("</p></section>");
 
@@ -875,6 +881,7 @@ static bool network_settings_changed(const EspConfig &left, const EspConfig &rig
     return left.use_dhcp != right.use_dhcp
         || left.recovery_ap_enable != right.recovery_ap_enable
         || strcmp(left.device_hostname, right.device_hostname) != 0
+        || strcmp(left.ntp_server, right.ntp_server) != 0
         || strcmp(left.wifi_ssid, right.wifi_ssid) != 0
         || strcmp(left.wifi_password, right.wifi_password) != 0
         || strcmp(left.ap_ssid, right.ap_ssid) != 0
@@ -898,6 +905,8 @@ static bool fy_settings_changed(const EspConfig &left, const EspConfig &right)
 static void append_protocol_diag_section(String &page)
 {
     const NetStats *stats = net_get_stats();
+    const ScopeHttpProxyStats *http_stats = scope_http_proxy_get_stats();
+    const ScopeVncProxyStats *vnc_stats = scope_vnc_proxy_get_stats();
     char buf[192];
 
     page += F("<section class='card'><h2>Protocol Diagnostics</h2>");
@@ -906,16 +915,20 @@ static void append_protocol_diag_section(String &page)
         return;
     }
 
-    page += F("<pre>");
+    page += F("<p class='muted'>This section tracks RPC/VXI session state. HTTP proxy and noVNC clients are separate runtime counters.</p><pre>");
     snprintf(buf, sizeof(buf),
-        "current_vxi_port=%u\nsession_active=%s\nlast_event=%s\n"
+        "snapshot_ms=%lu\ncurrent_vxi_port=%u\nvxi_session_active=%s\nlast_event=%s\n"
+        "http_proxy_active_clients=%u\nnovnc_proxy_active_clients=%u\n"
         "udp_getport_count=%lu\ntcp_getport_count=%lu\ngetport_zero_reply_count=%lu\n"
         "create_link_count=%lu\ndevice_write_count=%lu\ndevice_read_count=%lu\n"
         "destroy_link_count=%lu\nsession_accept_count=%lu\nsession_end_count=%lu\n"
         "session_drop_count=%lu\nunknown_proc_count=%lu\nmalformed_packet_count=%lu\n",
+        (unsigned long)millis(),
         stats->current_vxi_port,
         stats->session_active ? "yes" : "no",
         stats->last_event,
+        (unsigned)http_stats->active_connections,
+        (unsigned)vnc_stats->active_connections,
         (unsigned long)stats->udp_getport_count,
         (unsigned long)stats->tcp_getport_count,
         (unsigned long)stats->getport_zero_reply_count,
@@ -931,7 +944,7 @@ static void append_protocol_diag_section(String &page)
     page += buf;
     snprintf(buf, sizeof(buf),
         "last_write_len=%lu\nlast_read_len=%lu\nlast_read_declared_len=%lu\n"
-        "active_client=%s:%u\nreset_reason=%s\n",
+        "active_vxi_client=%s:%u\nreset_reason=%s\n",
         (unsigned long)stats->last_write_len,
         (unsigned long)stats->last_read_len,
         (unsigned long)stats->last_read_declared_len,
@@ -1065,7 +1078,7 @@ static void handle_root(void)
 static void handle_network_get(void)
 {
     String page;
-    page.reserve(9800);
+    page.reserve(11200);
     append_page_start(page, "Network");
     append_nav(page, "/network");
     append_summary_cards(page);
@@ -1074,6 +1087,8 @@ static void handle_network_get(void)
               "<input type='hidden' name='section' value='network'>"
               "<div class='field'><label>Hostname</label><input type='text' name='device_hostname' maxlength='32' value='");
     page += g_config.device_hostname;
+    page += F("'></div><div class='field'><label>Primary NTP Server</label><input type='text' name='ntp_server' maxlength='32' value='");
+    page += g_config.ntp_server;
     page += F("'></div><div class='field'><label>WiFi SSID</label><input type='text' name='wifi_ssid' maxlength='32' value='");
     page += g_config.wifi_ssid;
     page += F("'></div><div class='field'><label>WiFi Password</label><input type='password' id='wifi_password' name='wifi_password' maxlength='63' value='");
@@ -1084,8 +1099,8 @@ static void handle_network_get(void)
     if (!g_config.use_dhcp) page += F(" checked");
     page += F("> Static</label></div></div>");
 
-    page += F("<div class='grid'>"
-              "<div class='field'><label>Local IP</label><input type='text' name='ip' value='");
+    page += F("<div class='grid' id='wifi_static_fields'>"
+              "<div class='field'><label>WiFi IP</label><input type='text' name='ip' value='");
     page += ip_to_str(g_config.ip);
     page += F("'></div><div class='field'><label>Subnet Mask</label><input type='text' name='mask' value='");
     page += ip_to_str(g_config.mask);
@@ -1095,7 +1110,7 @@ static void handle_network_get(void)
     page += ip_to_str(g_config.dns);
     page += F("'></div><div class='field'><label>DNS2</label><input type='text' name='dns2' value='");
     page += ip_to_str_or_empty(g_config.dns2);
-    page += F("'></div></div>");
+    page += F("'></div></div><small>These WiFi STA fields apply only when Addressing is set to Static. When DHCP is selected, the stored static tuple is kept but not applied.</small>");
 
     page += F("<div class='grid'><div class='field'><label>AP SSID</label><input type='text' name='ap_ssid' maxlength='32' value='");
     page += g_config.ap_ssid;
@@ -1120,13 +1135,13 @@ static void handle_network_get(void)
 #endif
     page += F("<div class='actions'><button class='btn' type='submit'>Save</button></div></form></section>");
 
-    page += F("<section class='card'><h2>Ethernet LAN for Scope</h2><form method='post' action='/save'>"
+    page += F("<section class='card'><h2>Local IP</h2><form method='post' action='/save'>"
               "<input type='hidden' name='section' value='lan'>"
-              "<div class='grid'><div class='field'><label>LAN IP</label><input type='text' name='lan_ip' value='");
+              "<div class='grid'><div class='field'><label>Local IP</label><input type='text' name='lan_ip' value='");
     page += ip_to_str(g_config.lan_ip);
-    page += F("'></div><div class='field'><label>LAN Mask</label><input type='text' name='lan_mask' value='");
+    page += F("'></div><div class='field'><label>Subnet Mask</label><input type='text' name='lan_mask' value='");
     page += ip_to_str(g_config.lan_mask);
-    page += F("'></div></div><small>This LAN is a dedicated static local network for the oscilloscope. Only IP and mask apply here; gateway and DNS stay at 0.0.0.0. The UI and the minimal NTP server are available on this address whenever the Ethernet link is up.</small>"
+    page += F("'></div></div><small>This dedicated Ethernet LAN stays static. Configure the oscilloscope target address in the Scope tab. Gateway and DNS remain 0.0.0.0 here, while the UI and the minimal NTP server stay available on this address whenever the Ethernet link is up.</small>"
               "<div class='actions'><button class='btn' type='submit'>Save LAN</button></div></form></section>");
 
     append_page_end(page);
@@ -1136,8 +1151,9 @@ static void handle_network_get(void)
 static void handle_scope_get(void)
 {
     const ScopeHttpProxyStats *proxy_stats = scope_http_proxy_get_stats();
+    const ScopeVncProxyStats *vnc_stats = scope_vnc_proxy_get_stats();
     String page;
-    page.reserve(5600);
+    page.reserve(6400);
     append_page_start(page, "Scope");
     append_nav(page, "/scope");
     append_summary_cards(page);
@@ -1172,9 +1188,9 @@ static void handle_scope_get(void)
     page += proxy_stats->supported ? F("yes") : F("no in this build");
     page += F("</td></tr><tr><td>Status</td><td>");
     page += scope_proxy_status_text();
-    page += F("</td></tr><tr><td>noVNC VNC/WebSocket proxy</td><td>");
+    page += F("</td></tr><tr><td>noVNC proxy</td><td>");
     page += scope_vnc_proxy_status_text();
-    page += F("</td></tr><tr><td>Target</td><td>");
+    page += F("</td></tr><tr><td>HTTP target</td><td>");
     page += ip_to_str(g_config.scope_ip);
     page += F(":");
     page += String((unsigned)SCOPE_HTTP_PROXY_TARGET_PORT);
@@ -1182,26 +1198,28 @@ static void handle_scope_get(void)
     page += ip_to_str(g_config.scope_ip);
     page += F(":");
     page += String((unsigned)SCOPE_VNC_PROXY_TARGET_PORT);
-    page += F("</td></tr><tr><td>Active clients</td><td>");
+    page += F("</td></tr><tr><td>HTTP proxy clients</td><td>");
     page += String((unsigned)proxy_stats->active_connections);
     page += F("</td></tr><tr><td>noVNC clients</td><td>");
-    page += String((unsigned)scope_vnc_proxy_get_stats()->active_connections);
-    page += F("</td></tr><tr><td>Accepted</td><td>");
+    page += String((unsigned)vnc_stats->active_connections);
+    page += F("</td></tr><tr><td>Total active proxy clients</td><td>");
+    page += String((unsigned)(proxy_stats->active_connections + vnc_stats->active_connections));
+    page += F("</td></tr><tr><td>HTTP proxy accepted</td><td>");
     page += String((unsigned long)proxy_stats->accepted_connections);
     page += F("</td></tr><tr><td>noVNC accepted</td><td>");
-    page += String((unsigned long)scope_vnc_proxy_get_stats()->accepted_connections);
-    page += F("</td></tr><tr><td>Failed connects</td><td>");
+    page += String((unsigned long)vnc_stats->accepted_connections);
+    page += F("</td></tr><tr><td>HTTP proxy failed connects</td><td>");
     page += String((unsigned long)proxy_stats->failed_connects);
     page += F("</td></tr><tr><td>noVNC failed connects</td><td>");
-    page += String((unsigned long)scope_vnc_proxy_get_stats()->failed_connects);
+    page += String((unsigned long)vnc_stats->failed_connects);
     page += F("</td></tr><tr><td>noVNC active/max</td><td>");
-    page += String((unsigned)scope_vnc_proxy_get_stats()->active_connections);
+    page += String((unsigned)vnc_stats->active_connections);
     page += F("/");
-    page += String((unsigned)scope_vnc_proxy_get_stats()->max_connections);
+    page += String((unsigned)vnc_stats->max_connections);
     page += F("</td></tr><tr><td>noVNC bytes client->scope</td><td>");
-    page += String((unsigned long)scope_vnc_proxy_get_stats()->total_client_to_scope_bytes);
+    page += String((unsigned long)vnc_stats->total_client_to_scope_bytes);
     page += F("</td></tr><tr><td>noVNC bytes scope->client</td><td>");
-    page += String((unsigned long)scope_vnc_proxy_get_stats()->total_scope_to_client_bytes);
+    page += String((unsigned long)vnc_stats->total_scope_to_client_bytes);
     page += F("</td></tr><tr><td>Compatibility hints</td><td>");
     page += scope_proxy_hint_text();
     page += F("</td></tr><tr><td>noVNC hints</td><td>");
@@ -1209,8 +1227,8 @@ static void handle_scope_get(void)
     page += F("</td></tr><tr><td>Last error</td><td>");
     append_html_escaped(page, proxy_stats->last_error);
     page += F("</td></tr><tr><td>noVNC last error</td><td>");
-    append_html_escaped(page, scope_vnc_proxy_get_stats()->last_error);
-    page += F("</td></tr></table><div class='actions'><button class='btn' type='submit'>Save Proxy</button></div></form></section>");
+    append_html_escaped(page, vnc_stats->last_error);
+    page += F("</td></tr></table><small>HTTP proxy and noVNC/WebSocket proxy counters are independent. A non-zero noVNC client count with zero HTTP proxy clients is valid.</small><div class='actions'><button class='btn' type='submit'>Save Proxy</button></div></form></section>");
 
     append_page_end(page);
     send_page(page);
@@ -1220,7 +1238,7 @@ static void handle_fy_get(void)
 {
     static const char *const modes[] = { "8N1", "8N2", "8E1", "8E2", "8O1", "8O2", "7E1", "7E2", "7O1", "7O2" };
     String page;
-    page.reserve(5200);
+    page.reserve(6200);
     append_page_start(page, "FY6900");
     append_nav(page, "/fy6900");
     append_summary_cards(page);
@@ -1244,6 +1262,17 @@ static void handle_fy_get(void)
     page += F("'></div></div><small>UART2 pin map: IO17 = TXD2 to FY6900 RX, IO5 = RXD2 from FY6900 TX, with a shared ground.</small>"
               "<div class='actions'><button class='btn' type='submit'>Save</button></div></form></section>");
 
+    page += F("<section class='card'><h2>FY6900 runtime summary</h2><table>"
+              "<tr><td>Configured serial mode</td><td>");
+    page += g_config.awg_serial_mode;
+    page += F("</td></tr><tr><td>Runtime serial mode</td><td>");
+    page += fy_get_serial_mode();
+    page += F("</td></tr><tr><td>Serial2 initialized</td><td>");
+    page += fy_serial_initialized() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>Status</td><td>");
+    page += fy_status_text();
+    page += F("</td></tr></table><small>The live UART2 runtime uses the current FY runtime config. In the final release build the saved FY settings are applied immediately after Save.</small></section>");
+
 #if FW_ENABLE_MANUAL_FY_TEST
     page += F("<section class='card'><h2>Manual Safe FY Test</h2><table>"
               "<tr><td>Mode</td><td>Manual only, nothing runs at boot</td></tr>"
@@ -1265,7 +1294,7 @@ static void handle_fy_get(void)
 static void handle_bode_get(void)
 {
     String page;
-    page.reserve(4200);
+    page.reserve(4800);
     append_page_start(page, "Bode");
     append_nav(page, "/bode");
     append_summary_cards(page);
@@ -1283,7 +1312,7 @@ static void handle_bode_get(void)
     if (g_config.awg_firmware_family == AWG_FW_FAMILY_LATER_FY6900) page += F(" selected");
     page += F(">later FY6900</option></select></div><div class='field'><label>Auto Output-Off Timeout (ms)</label><input type='text' name='auto_output_off_timeout_ms' value='");
     page += String((unsigned)g_config.auto_output_off_timeout_ms);
-    page += F("'></div></div><div class='actions'><button class='btn' type='submit'>Save</button></div></form></section>");
+    page += F("'></div></div><small>Friendly Name is stored for UI/diagnostics only. IDN Model Name affects the live *IDN? response, FY Firmware Family changes FY command formatting, and Auto Output-Off Timeout is enforced by the VXI runtime. VXI Session Timeout remains configured in the Scope tab.</small><div class='actions'><button class='btn' type='submit'>Save</button></div></form></section>");
 
     append_page_end(page);
     send_page(page);
@@ -1292,10 +1321,11 @@ static void handle_bode_get(void)
 static void handle_diag_get(void)
 {
     String page;
-    page.reserve(8800);
+    page.reserve(9400);
     append_page_start(page, "Diagnostics");
     append_nav(page, "/diag");
     append_summary_cards(page);
+    page += F("<script>scheduleAutoRefresh(5000);</script><p class='muted'>Diagnostics auto-refresh every 5 seconds so runtime counters stay current.</p>");
 
     page += F("<section class='card'><h2>System</h2><table>");
     page += F("<tr><td>Uptime</td><td>");
@@ -1344,6 +1374,8 @@ static void handle_diag_get(void)
     page += runtime_net_time_status_text();
     page += F("</td></tr><tr><td>LAN NTP server</td><td>");
     page += runtime_net_ntp_server_running() ? F("on") : F("off");
+    page += F("</td></tr><tr><td>Configured upstream</td><td>");
+    page += g_config.ntp_server;
     page += F("</td></tr><tr><td>NTP requests served</td><td>");
     page += String((unsigned long)runtime_net_ntp_request_count());
     page += F("</td></tr><tr><td>Last NTP served</td><td>");
@@ -1361,9 +1393,11 @@ static void handle_diag_get(void)
     page += String((unsigned long)runtime_net_scope_last_success_ms());
     page += F(" ms</td></tr><tr><td>HTTP proxy</td><td>");
     page += scope_proxy_status_text();
-    page += F("</td></tr><tr><td>Proxy clients</td><td>");
+    page += F("</td></tr><tr><td>HTTP proxy clients</td><td>");
     page += String((unsigned)scope_http_proxy_get_stats()->active_connections);
-    page += F("</td></tr><tr><td>Proxy listen port</td><td>");
+    page += F("</td></tr><tr><td>Total active proxy clients</td><td>");
+    page += String((unsigned)(scope_http_proxy_get_stats()->active_connections + scope_vnc_proxy_get_stats()->active_connections));
+    page += F("</td></tr><tr><td>HTTP proxy listen port</td><td>");
     page += String((unsigned)scope_http_proxy_listen_port());
     page += F("</td></tr><tr><td>noVNC proxy</td><td>");
     page += scope_vnc_proxy_status_text();
@@ -1381,7 +1415,7 @@ static void handle_diag_get(void)
     page += String((unsigned long)scope_vnc_proxy_get_stats()->total_client_to_scope_bytes);
     page += F("</td></tr><tr><td>noVNC bytes scope->client</td><td>");
     page += String((unsigned long)scope_vnc_proxy_get_stats()->total_scope_to_client_bytes);
-    page += F("</td></tr><tr><td>Proxy target</td><td>");
+    page += F("</td></tr><tr><td>HTTP target</td><td>");
     page += ip_to_str(g_config.scope_ip);
     page += F(":");
     page += String((unsigned)SCOPE_HTTP_PROXY_TARGET_PORT);
@@ -1732,6 +1766,7 @@ static void handle_save_post(void)
     if (section == "network") {
         uint8_t ip[4], mask[4], gw[4], dns1[4], dns2[4];
         String hostname = s_server.arg("device_hostname");
+        String ntp_server = s_server.arg("ntp_server");
         String ssid = s_server.arg("wifi_ssid");
         String password = s_server.arg("wifi_password");
         String ap_ssid = s_server.arg("ap_ssid");
@@ -1745,6 +1780,9 @@ static void handle_save_post(void)
         memcpy(dns2, next.dns2, 4u);
 
         if (!is_safe_hostname(hostname)) { ok = false; error += F("Invalid hostname. "); }
+        if (!is_safe_idn_name(ntp_server) || ntp_server.length() > sizeof(next.ntp_server) - 1) {
+            ok = false; error += F("Invalid NTP server. ");
+        }
         if (ssid.length() > 0 && !is_safe_label_text(ssid, sizeof(next.wifi_ssid) - 1, true)) {
             ok = false; error += F("SSID must be printable. ");
         }
@@ -1788,6 +1826,8 @@ static void handle_save_post(void)
             next.recovery_ap_enable = s_server.hasArg("recovery_ap_enable") ? 1u : 0u;
             strncpy(next.device_hostname, hostname.c_str(), sizeof(next.device_hostname) - 1);
             next.device_hostname[sizeof(next.device_hostname) - 1] = '\0';
+            strncpy(next.ntp_server, ntp_server.c_str(), sizeof(next.ntp_server) - 1);
+            next.ntp_server[sizeof(next.ntp_server) - 1] = '\0';
             strncpy(next.wifi_ssid, ssid.c_str(), sizeof(next.wifi_ssid) - 1);
             next.wifi_ssid[sizeof(next.wifi_ssid) - 1] = '\0';
             strncpy(next.wifi_password, password.c_str(), sizeof(next.wifi_password) - 1);

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CONFIG_VERSION      8
+#define CONFIG_VERSION      9
 #define CONFIG_EEPROM_ADDR  0
 #define CONFIG_EEPROM_SIZE  256
 
@@ -25,6 +25,7 @@ struct EspConfig {
     char     wifi_password[65];
     char     ap_ssid[33];
     char     ap_password[65];
+    char     ntp_server[33];
     char     friendly_name[25];
     char     idn_response_name[17];
     char     awg_serial_mode[5];

@@ -1,222 +1,296 @@
 # WT32-ETH01 Bode Bridge
-# pio device monitor -e wt32eth_release_final_safe -b 115200
 
-Final firmware for `WT32-ETH01` that presents an `FY6900` to the BODE function of a Siglent `SDS800X-HD` oscilloscope and, through the same device, exposes the oscilloscope web UI via HTTP proxy and noVNC.
+Firmware for `WT32-ETH01` that bridges a `FeelElec / FeelTech FY6900` function generator to the Bode feature of a `Siglent SDS800X-HD` oscilloscope, while also exposing the oscilloscope web UI through an HTTP proxy and a noVNC/WebSocket proxy.
 
-This repository has been conservatively cleaned up around a single main variant:
+The main production-oriented build kept in this repository is:
 
-- main publishable build: `wt32eth_release_final_safe`
-- auxiliary recovery build: `wt32eth_bringup_safe`
-- auxiliary FY service build: `wt32eth_final_test_safe`
+- `wt32eth_release_final_safe`
 
-## Final architecture
+Auxiliary kept builds:
 
-- dedicated static LAN for the oscilloscope on WT32-ETH01 Ethernet
-- no gateway and no DNS on the dedicated LAN interface
-- separate WiFi STA, configurable as DHCP or static
-- permanently active AP for recovery and local UI access
-- Web UI accessible from LAN, WiFi STA, and AP
-- minimal NTP server on LAN
-- BODE/VXI services started on LAN
-- FY6900 on UART2
-- HTTP proxy for the scope UI on port `100`
-- noVNC/VNC proxy on port `5900`
+- `wt32eth_bringup_safe`
+- `wt32eth_final_test_safe`
 
-## Kept builds
+Supporting documents:
 
-### `wt32eth_release_final_safe`
+- [BUILDING.md](BUILDING.md)
+- [FLASHING.md](FLASHING.md)
+- [RELEASE_NOTES.md](RELEASE_NOTES.md)
+- [docs/VALIDATION_SUMMARY.md](docs/VALIDATION_SUMMARY.md)
 
-The main build. It keeps all of the following active at the same time:
+## Overview
 
-- Ethernet LAN for the scope
-- WiFi STA
-- permanent AP
-- NTP server on LAN
-- BODE/VXI
-- FY6900 active in normal runtime
-- HTTP/noVNC proxy for the scope UI
+This project combines three functions in one WT32-ETH01 module:
 
-### `wt32eth_bringup_safe`
+- `FY6900 bridge`: UART2 control of the function generator
+- `scope-side Ethernet LAN`: dedicated static network for the oscilloscope, Bode/VXI services, and the minimal LAN NTP server
+- `WiFi upstream and UI access`: 2.4 GHz WiFi STA for upstream connectivity, internet time source access, and convenient UI access
 
-Recovery build. It forces AP, ignores the stored configuration, and does not initialize FY6900 during boot. It is kept for quickly returning the device to a configurable state if the main runtime must be isolated.
+In the final main build, the recovery AP also remains active so the UI is still reachable locally while Ethernet and WiFi STA are in use.
 
-### `wt32eth_final_test_safe`
+## Architecture
 
-Service build for FY6900. It forces AP, does not start the normal final runtime, and keeps FY tests manual only from UI/diag. It is kept for hardware validation and UART2/FY troubleshooting without changing the main build.
+![WT32 Web UI overview](docs/WEB%20WT32.png)
 
-## Final network
+*WT32-ETH01 configuration and runtime UI in the final project state.*
 
-### LAN for the oscilloscope
+![Scope web UI through the WT32 proxy](docs/WEB%20DSO.png)
 
-- default WT32 LAN static IP: `10.11.13.221/24`
+*Oscilloscope web UI exposed through the WT32 HTTP proxy / noVNC path.*
+
+## Hardware Roles
+
+### WT32-ETH01
+
+- controls the FY6900 through UART2
+- exposes Bode/VXI services toward the oscilloscope on the dedicated Ethernet LAN
+- provides the local configuration UI
+- serves a minimal LAN-side NTP service for the oscilloscope
+- proxies the oscilloscope web UI for browser access
+
+### FY6900
+
+- generates the excitation signal
+- is controlled only through UART2
+- in the validated setup, only `Channel 1` is used for the Bode measurement path
+
+### Siglent SDS800X-HD
+
+- uses `Channel 1` as the direct reference input
+- measures the DUT response on `Channels 2 to 4`, depending on the test setup
+- connects by RJ45 Ethernet to the dedicated WT32 LAN
+- uses the WT32 LAN-side NTP service and Bode/VXI services on that dedicated oscilloscope-side network
+
+## Physical Connections
+
+### Signal Path
+
+The measurement path should be wired like this:
+
+1. Use only `FY6900 Channel 1` as the source.
+2. Split the `FY6900 Channel 1` output with a `BNC T splitter`.
+3. Route one branch of that splitter directly to the oscilloscope reference input on `Scope Channel 1`.
+4. Route the other branch from the splitter to the `DUT`.
+5. Measure the DUT response on oscilloscope `Channels 2 to 4`, as required by the test.
+
+That means:
+
+- `Scope CH1` = reference channel
+- `Scope CH2` / `CH3` / `CH4` = DUT measurement channels
+
+For the DUT measurement inputs, use `1 MOhm to 50 Ohm` input adapters on the oscilloscope channels where the DUT response is measured. This is an actual hardware requirement of the documented setup and is not optional in the final wiring description.
+
+### UART And Grounding
+
+- `UART0` for flashing/logs:
+  - `IO1 = TX0`
+  - `IO3 = RX0`
+- `UART2` for FY6900:
+  - `IO17 = TXD2` -> `FY6900 RX`
+  - `IO5 = RXD2` <- `FY6900 TX`
+- a correct common ground between WT32-ETH01 and FY6900 is required
+
+### Voltage-Level Caution
+
+The WT32/ESP32 GPIO path is `3.3 V logic`. The `FY6900 TX -> WT32 RX` path must therefore also be `3.3 V-safe`. If your FY6900 serial TX level exceeds `3.3 V`, add level shifting or a divider before feeding `IO5`.
+
+## Network Topology
+
+### Dedicated Scope-Side LAN
+
+- use an `RJ45 Ethernet cable` between the `DSO` and the `WT32-ETH01`
+- this is the dedicated oscilloscope-side LAN
+- default WT32 LAN IP: `10.11.13.221/24`
 - default scope IP: `10.11.13.220`
-- scope HTTP probe port: `80`
 - LAN gateway: `0.0.0.0`
 - LAN DNS: `0.0.0.0`
 
-The LAN is dedicated to the WT32 <-> oscilloscope relationship. BODE/VXI and the NTP server on LAN depend on this interface, not on WiFi STA.
+This is the correct wording. The RJ45 cable is between the `DSO` and the `WT32-ETH01` on the dedicated LAN. The `FY6900` is not connected by RJ45.
+
+Role of the dedicated LAN:
+
+- oscilloscope-side network
+- Bode/VXI transport
+- scope probe reachability
+- LAN-side NTP service exposed by the WT32
+- proxy target path toward the oscilloscope
 
 ### WiFi STA
 
-- configured from the UI and stored in `Preferences / NVS`
-- can operate in DHCP or static mode
-- the Web UI remains available on STA when the connection exists
+- the WT32-ETH01 uses `2.4 GHz WiFi`
+- WiFi STA is used for upstream connectivity
+- WiFi STA can provide internet access needed for upstream NTP time acquisition
+- WiFi STA is also a convenient access path for the WT32 Web UI
+- WiFi STA can be configured as DHCP or static in the UI
 
-### Permanent AP
+Role of WiFi:
+
+- upstream connectivity
+- internet access for time synchronization
+- browser access to the WT32 UI
+
+### Permanent Recovery AP
 
 - default SSID: `WT32-BODE-SETUP`
 - default IP: `192.168.4.1/24`
-- active in the main final build as a recovery and service path
+- kept active in the final main build as a recovery/service path
 
-## FY6900
+## Final Architecture Summary
 
-### Pin map
+- `LAN` = dedicated oscilloscope-side network
+- `WiFi` = upstream connectivity, UI access, and upstream NTP source
+- `AP` = recovery and local service access
+- `UART2` = FY6900 control
 
-- `UART0` flash/log: `IO1 = TX0`, `IO3 = RX0`
-- `UART2` FY6900: `IO17 = TXD2` to `FY6900 RX`, `IO5 = RXD2` from `FY6900 TX`
+## Build Variants Kept
 
-### Final electrical and protocol settings
+### `wt32eth_release_final_safe`
 
-- default baud rate: `115200`
-- default serial mode: `8N2`
-- default serial timeout: `1200 ms`
-- flow control: `none`
-- command format: ASCII text commands terminated with `LF` / `0x0A`
-- FY replies are also terminated with `LF` / `0x0A`
+Main public build with:
 
-### Recommended FY6900 terminal settings
+- Ethernet scope LAN
+- WiFi STA
+- permanent recovery AP
+- minimal LAN NTP server
+- Bode/VXI runtime
+- FY6900 runtime support
+- HTTP proxy on port `100`
+- noVNC/WebSocket proxy on port `5900`
 
-For direct manual communication tests with FY6900, use:
+### `wt32eth_bringup_safe`
+
+Recovery build that forces AP, ignores stored configuration, and keeps FY hardware disabled at boot.
+
+### `wt32eth_final_test_safe`
+
+Manual FY6900 service build used for controlled UART2 and FY validation without treating it as the normal end-user runtime.
+
+## Web UI And Usage
+
+![Bode workflow screen](docs/Bode.png)
+
+*Example Bode-related oscilloscope screen from the validated setup.*
+
+![Bode settings screen](docs/Settings%20Bode.png)
+
+*Example oscilloscope Bode settings screen used in the documented workflow.*
+
+![Measurement confirmation screen](docs/Confirm.png)
+
+*Example confirmation screen during the measured workflow.*
+
+![Time confirmation screen](docs/Confirm%20Time.png)
+
+*Example timing confirmation screen from the validated setup.*
+
+Useful routes in the final build:
+
+- `/` runtime status
+- `/network` WiFi STA, AP, LAN, and NTP upstream configuration
+- `/scope` scope target IP and proxy configuration
+- `/fy6900` FY UART2 configuration
+- `/bode` Bode-related stored parameters
+- `/diag` runtime diagnostics
+
+Typical use flow:
+
+1. power the WT32-ETH01 and connect the oscilloscope by RJ45 to the dedicated LAN
+2. connect WT32 UART2 to the FY6900 UART
+3. wire FY6900 Channel 1 through the BNC T splitter
+4. route one splitter branch to scope `CH1` and the other to the DUT
+5. connect DUT measurement returns to scope `CH2` to `CH4` as required
+6. access the WT32 Web UI from AP, WiFi STA, or LAN
+7. configure WiFi STA if upstream internet/NTP access is required
+8. configure `Scope IP` in the Scope tab to match the oscilloscope Ethernet address
+9. verify the scope UI through `http://<ESP32_IP>:100/` or through noVNC if needed
+
+## FY6900 Runtime And Protocol
+
+Validated FY6900 settings in this project:
 
 - baud rate: `115200`
-- data bits: `8`
-- stop bits: `2`
-- parity: `none`
+- serial mode: `8N2`
+- serial timeout: `1200 ms`
 - flow control: `none`
-- line ending for transmitted commands: `Append LF`
-- received polling interval: any reasonable terminal default is acceptable; `100 ms` works in the validated setup
-- local echo: optional; useful for terminal testing, but not required by the protocol
+- command termination: `LF`
 
-### Recommended FY6900 test commands
+Recommended read-only test commands:
 
-Use simple read-only commands first:
+- `UMO`
+- `UID`
+- `RMN`
 
-- `UMO` + `LF` -> reads the model string
-- `UID` + `LF` -> reads the instrument ID
-- `RMN` + `LF` -> reads the main output enable status
+The final release build uses deferred FY initialization so that the network and UI can come up before FY initialization completes.
 
-For write commands, always keep the final `LF`. Example:
+## Scope Proxy
 
-- `WMN0` + `LF` -> disables the main output
-
-### Robust behavior
-
-- the main build uses `deferred fy_init`, so the network and Web UI come up before FY initialization
-- an absent or slow FY must not block safe boot
-- the `wt32eth_final_test_safe` service build keeps manual FY tests for controlled verification
-- the validated project setup uses `115200 8N2` for FY communication; this is intentionally different from the ESP32 ROM bootloader UART settings used for firmware flashing
-
-## Proxy for the oscilloscope UI
-
-### HTTP proxy
+### HTTP Proxy
 
 - listens on `http://<ESP32_IP>:100/`
 - forwards to `scope_ip:80`
-- sufficient for the oscilloscope’s normal web pages
+- intended for the oscilloscope web pages
 
-### noVNC / VNC proxy
+### noVNC / VNC Proxy
 
 - listens on `ws://<ESP32_IP>:5900/websockify`
-- transparently forwards to `scope_ip:5900`
-- the current implementation has been validated for 2 simultaneous noVNC clients
+- forwards to `scope_ip:5900`
+- validated with two simultaneous noVNC clients in the retained project validation
 
-### Remaining real limitations
+## Build And Flash
 
-- 2 simultaneous noVNC clients are demonstrated
-- a third client is not a supported target in the current state
-- there is no TLS or `wss://`
-- there is no complex multiplexing; each client uses its own upstream connection to the scope
-
-## Web UI
-
-The useful routes kept in the final variant are:
-
-- `/` runtime status and summary
-- `/network` LAN, WiFi STA, and AP configuration
-- `/scope` scope and proxy configuration
-- `/fy6900` UART2/FY configuration
-- `/bode` BODE parameters
-- `/diag` service diagnostics
-- `/save` save configuration
-- `/reboot` controlled restart
-- `/factory-reset` reset configuration to defaults
-
-The `/diag` endpoint is intentionally kept as a service tool. It is not a temporary leftover.
-
-## Build and flash
-
-### Main build
+Main build:
 
 ```bash
 pio run -e wt32eth_release_final_safe
 ```
 
-### Main upload
+Main upload:
 
 ```bash
 pio run -e wt32eth_release_final_safe -t upload --upload-port COMx
 ```
 
-### Auxiliary builds
+Auxiliary builds:
 
 ```bash
 pio run -e wt32eth_bringup_safe
 pio run -e wt32eth_final_test_safe
 ```
 
-### Serial monitor
-
-```bash
-pio device monitor -b 115200 -p COMx
-```
-
-### Generate binaries copied to the project root
+Export tracked release binaries:
 
 ```bash
 python scripts/build_bins.py
 ```
 
+Detailed instructions:
 
+- [BUILDING.md](BUILDING.md)
+- [FLASHING.md](FLASHING.md)
 
-## Programming, power, and UART-level notes
+The main prebuilt firmware artifacts are kept in:
 
-### Entering bootloader mode for flashing
+- [release/wt32eth_release_final_safe/app.bin](release/wt32eth_release_final_safe/app.bin)
+- [release/wt32eth_release_final_safe/bootloader.bin](release/wt32eth_release_final_safe/bootloader.bin)
+- [release/wt32eth_release_final_safe/partitions.bin](release/wt32eth_release_final_safe/partitions.bin)
 
-For manual flashing, hold `GPIO0` low during power-up, or keep `GPIO0` low and briefly pull `EN` to `GND` to reset the board into the ROM bootloader. This matches the normal ESP32 download-boot flow and is commonly used on WT32-ETH01 boards.
+## Programming, Power, And UART Notes
 
-### Recommended USB-TTL programming connection
+### Entering Bootloader Mode For Flashing
 
-Use a **3.3 V logic USB-TTL adapter** such as a CP2102-based adapter and cross the UART0 data lines:
+For manual flashing, hold `GPIO0` low during power-up, or keep `GPIO0` low and briefly pull `EN` to `GND` to reset the board into the ROM bootloader.
+
+### Recommended USB-TTL Programming Connection
+
+Use a `3.3 V logic` USB-TTL adapter and cross the UART0 data lines:
 
 - `WT32 TXD / IO1 / TXD0` -> adapter `RX`
 - `WT32 RXD / IO3 / RXD0` -> adapter `TX`
 - `WT32 GND` -> adapter `GND`
 
-### ESP32 ROM bootloader serial settings (for flashing)
+### ESP32 ROM Bootloader Serial Settings
 
-When talking to the ESP32 ROM bootloader through a USB-TTL adapter, use:
-
-- baud rate: `115200`
-- data bits: `8`
-- stop bits: `1`
-- parity: `none`
-- flow control: `none`
-
-These are the recommended serial settings for the ESP32 bootloader connection. Higher data-transfer baud rates can be used by flashing tools after the initial connection, but the safe baseline remains `115200 8N1`.
-
-### Serial monitor settings after flashing
-
-For normal runtime logs on `UART0`, use:
+For the ESP32 ROM bootloader through UART0, use:
 
 - baud rate: `115200`
 - data bits: `8`
@@ -224,93 +298,60 @@ For normal runtime logs on `UART0`, use:
 - parity: `none`
 - flow control: `none`
 
-If a terminal program keeps control lines asserted and accidentally holds the ESP32 in reset or boot mode, disable hardware flow control and close any active monitor before starting a flash operation.
+### Runtime Serial Monitor Settings
 
-### Power supply requirements
+For runtime logs on UART0, use:
 
-The WT32-ETH01 supports **either 5 V or 3.3 V input power (choose one, not both)**, and the module datasheet specifies a **minimum 500 mA supply capability**. For this project, a **solid 3.3 V supply is recommended** when available; otherwise 5 V input is also valid. In practice, using a **1 A-capable supply** gives more margin during Ethernet, WiFi, and proxy activity.
+- baud rate: `115200`
+- data bits: `8`
+- stop bits: `1`
+- parity: `none`
+- flow control: `none`
 
-### Practical decoupling recommendation
+Do not mix these UART0 settings with the FY6900 UART2 link, which is validated here as `115200 8N2`.
 
-For reliable flashing and runtime stability, add a **470 uF low-ESR/polymer capacitor** between `3.3V` and `GND`, with the shortest possible leads. This is a practical project recommendation, not a WT32-ETH01 datasheet requirement.
+### Power Supply Requirements
 
-### Observed current on this project setup
+- WT32-ETH01 supports either `5 V` or `3.3 V` input power, but not both at the same time
+- the module datasheet specifies a minimum `500 mA` supply capability
+- a stable `1 A` capable supply is recommended for this project
 
-On the validated project hardware, the observed normal runtime current was about **300 mA**, with **very short peaks up to roughly 1.2 A for a few milliseconds**. Treat this as an observed project characteristic, not a guaranteed WT32-ETH01 datasheet value.
+### Practical Decoupling Recommendation
 
-### FY6900 UART voltage-level caution
+For reliable flashing and runtime stability, add a `470 uF` low-ESR or polymer capacitor between `3.3V` and `GND`, with short leads.
 
-The **programming adapter must use 3.3 V logic**. The WT32/ESP32 GPIO voltage tolerance is **3.6 V max**, so the `FY6900 TX -> WT32 RX` path must also be **3.3 V-safe**. If your FY6900 serial TX level is above 3.3 V, add a level shifter or divider before feeding `IO5`.
+## Boot, Flash, And Physical Intervention
 
-### Important distinction: programmer UART vs FY6900 UART
+If automatic bootloader entry does not work on your board, you must perform the physical boot/reset steps locally. This project does not assume that flashing can always be completed without manual intervention.
 
-These are two different serial links with different settings:
+Use `UART0` for flashing and logs, and `UART2` only for FY6900 control.
 
-#### 1. Programmer / bootloader / runtime logs on UART0
-
-- pins: `IO1 / TX0`, `IO3 / RX0`
-- purpose:
-  - flashing firmware
-  - boot messages
-  - runtime serial logs
-- safe default settings:
-  - flashing: `115200 8N1`
-  - runtime monitor: `115200 8N1`
-
-#### 2. FY6900 control link on UART2
-
-- pins: `IO17 / TXD2`, `IO5 / RXD2`
-- purpose:
-  - generator control
-  - FY protocol commands
-- validated project settings:
-  - `115200 8N2`
-  - `LF` line ending
-  - `none` parity
-  - `none` flow control
-
-Do not mix these two UART links or their settings.
-
-## Recommended minimum test
+## Recommended Minimum Test
 
 1. build `wt32eth_release_final_safe`
 2. flash it to the board
-3. if auto-reset does not enter the bootloader, you must put the board into boot mode and perform a manual hardware reset
+3. if auto-reset does not enter the bootloader, put the board into boot mode and perform a manual hardware reset
 4. check on serial that LAN, STA/AP, and proxy statuses appear
 5. check the UI on one of the active addresses
-6. check BODE/NTP on LAN
+6. check Bode/NTP on LAN
 7. check `http://<ESP32_IP>:100/`
 8. check noVNC through the proxied scope UI
 
-## What is demonstrated and what is not
+## Known Real Limitations
 
-Demonstrated in the workspace and in the retained validation sessions:
+- the final state targets up to `2` simultaneous noVNC clients
+- `wss://` / TLS is not provided
+- the project assumes correct power, grounding, and serial-level wiring
+- long-term stability beyond the retained validation sessions is not claimed automatically by the code alone
 
-- the `wt32eth_release_final_safe` build passes
-- the `wt32eth_bringup_safe` build passes
-- the `wt32eth_final_test_safe` build passes
-- FY6900 communicates on UART2 in the service build
-- the HTTP proxy on `:100` works
-- noVNC through `:5900` works with 2 simultaneous clients
+## Validation Baseline
 
-Not automatically demonstrated by the code alone:
+The retained local validation history for the kept builds is summarized in:
 
-- all physical power and cabling scenarios on your hardware
-- long-term stability for 2 simultaneous noVNC sessions
-- any future upload without physical intervention; if auto-reset does not work, it must be done manually
+- [docs/VALIDATION_SUMMARY.md](docs/VALIDATION_SUMMARY.md)
 
-## Power and hardware notes
+At release-preparation level, the following were already validated locally:
 
-- the project assumes a correct common ground between WT32 and FY6900
-- there is no code-level compensation for unstable power, external brownout, or incorrect serial cabling
-- if upload or boot no longer enters automatically, local physical intervention remains the user’s responsibility
-
-## Useful files kept in `debug/`
-
-- `wt32eth_release_final_safe_report.txt`
-- `wt32eth_final_test_safe_report.txt`
-- `scope_http_proxy_report.txt`
-- `siglent_novnc_proxy_report.txt`
-- `novnc_two_clients_upgrade_report.txt`
-- `final_cleanup_report.txt`
-
+- `wt32eth_release_final_safe`
+- `wt32eth_bringup_safe`
+- `wt32eth_final_test_safe`

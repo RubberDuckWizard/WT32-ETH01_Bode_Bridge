@@ -86,6 +86,7 @@ void setup()
         g_config.device_hostname,
         g_config.use_dhcp ? "on" : "off",
         (unsigned long)ESP.getFreeHeap());
+    Serial.printf("ntp_upstream=%s\r\n", g_config.ntp_server);
     if (!g_config.use_dhcp) {
         Serial.printf("static_ip=%u.%u.%u.%u mask=%u.%u.%u.%u gw=%u.%u.%u.%u dns=%u.%u.%u.%u\r\n",
             g_config.ip[0], g_config.ip[1], g_config.ip[2], g_config.ip[3],

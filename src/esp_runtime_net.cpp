@@ -492,7 +492,7 @@ static void poll_time_sync(void)
         return;
     }
 
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    configTime(0, 0, g_config.ntp_server, "time.nist.gov");
     s_state.time_sync_started = true;
     s_state.last_time_sync_attempt_ms = millis();
 }

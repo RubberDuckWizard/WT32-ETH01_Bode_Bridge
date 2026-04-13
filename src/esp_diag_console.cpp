@@ -108,6 +108,7 @@ static void cmd_status(void)
         runtime_net_lan_subnet().toString().c_str(),
         runtime_net_ntp_server_running() ? runtime_net_time_status_text() : "disabled",
         (unsigned long)runtime_net_ntp_request_count());
+    diag_printf("ntp upstream=%s\r\n", g_config.ntp_server);
     diag_printf("wifi sta_valid=%s connecting=%s connected=%s ssid=%s ip=%s ap=%s\r\n",
         runtime_net_sta_config_valid() ? "yes" : "no",
         runtime_net_sta_connecting() ? "yes" : "no",
@@ -175,6 +176,7 @@ static void cmd_cfg_show(void)
         g_config.friendly_name,
         g_config.idn_response_name,
         g_config.use_dhcp ? "on" : "off");
+    diag_printf("ntp_host=%s\r\n", g_config.ntp_server);
     diag_printf("ip="); print_ip4(g_config.ip);
     diag_printf(" mask="); print_ip4(g_config.mask);
     diag_printf(" gw="); print_ip4(g_config.gw);
