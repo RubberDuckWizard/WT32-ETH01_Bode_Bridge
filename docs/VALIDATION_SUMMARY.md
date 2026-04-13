@@ -1,43 +1,85 @@
 # Validation Summary
 
-## Release Refresh Checkpoint
+## Final Release Validation
 
 Date: 2026-04-13
+Target build: `wt32eth_release_final_safe`
 
-## Verified PlatformIO Builds
+## Configuration Policy Audit
 
-All kept environments were rebuilt successfully during release refresh validation:
+- `saveConfig()` now skips physical `Preferences` / `NVS` writes when the current configuration matches the last persisted snapshot.
+- no periodic autosave, background save, or runtime save loop was found in the audited code paths.
+- boot-time automatic writes remain only in three critical categories:
+  - legacy EEPROM to `Preferences` migration
+  - failed configuration load that forces a reset to defaults
+  - critical repair of invalid, corrupted, or incomplete stored configuration that would otherwise prevent coherent boot
+- non-critical normalization is kept in RAM until the user explicitly saves.
 
-- `wt32eth_release_final_safe`
-  RAM: `62156` bytes
-  Flash: `951113` bytes
-- `wt32eth_bringup_safe`
-  RAM: `61664` bytes
-  Flash: `889609` bytes
-- `wt32eth_final_test_safe`
-  RAM: `61968` bytes
-  Flash: `922241` bytes
+## Final Network Defaults
 
-Updated binary artifact hashes for the current packaged output are recorded in [../release/SHA256SUMS.txt](../release/SHA256SUMS.txt).
+- WiFi STA default: DHCP enabled (`DEF_USE_DHCP = 1`)
+- WiFi STA default static tuple: unset / zeroed until the user explicitly configures one
+- dedicated LAN default: `10.11.13.221/24`
+- default scope target: `10.11.13.220`
+- recovery AP default: `192.168.4.1/24`
+- clean-NVS first boot therefore avoids an immediate STA/LAN subnet collision.
 
-## Retained Behavioral Evidence
+## Build Evidence
 
-The public repository does not include the raw local engineering notes from `debug/`, but their relevant conclusions were retained in the documentation set:
+The final release build was rebuilt cleanly with:
 
-- The HTTP proxy on port `100` was previously validated against the oscilloscope web UI.
-- The noVNC/VNC proxy on port `5900` was previously validated.
-- Two simultaneous noVNC clients are the documented tested limit.
-- FY6900 communication over `UART2` was previously validated through the service workflow.
+- `pio run -e wt32eth_release_final_safe -t clean; pio run -e wt32eth_release_final_safe`
 
-## Not Repeated In This Packaging Pass
+Observed result:
 
-- A fresh live flash to physical hardware
-- A new end-to-end live check of Ethernet, WiFi STA, AP, NTP, Bode, HTTP proxy, and noVNC on the actual bench setup
-- Long-duration stress testing for concurrent noVNC sessions
+- `SUCCESS`
+- RAM usage: `98700 / 327680` (`30.1%`)
+- Flash usage: `960253 / 1310720` (`73.3%`)
 
-## Local-Only Materials Intentionally Excluded From Git
+## Hardware Evidence
 
-- Vendor reference files under `DOC/`
-- Raw engineering and debug notes under `debug/`
+The final release build was erased, flashed, and booted on the local `WT32-ETH01` over `COM6` with:
 
-Those files remain useful locally but were excluded from the public Git history to keep the repository focused, English-only, and free of third-party reference material that is not required for building or using the firmware.
+- `pio run -e wt32eth_release_final_safe -t erase -t upload -t monitor --upload-port COM6 --monitor-port COM6`
+
+Observed first-boot excerpt after erase:
+
+- `stored_config_valid=no`
+- `dhcp=on`
+- `lan_config ip=10.11.13.221 mask=255.255.255.0`
+- `recovery AP active reason=no_sta_config ip=192.168.4.1`
+- `proxy_http ... listening=yes port=100`
+- `proxy_vnc ... listening=yes port=5900`
+
+Observed live runtime / UI evidence after the board rejoined the bench WiFi:
+
+- `http://192.168.91.157/` responded with HTTP `200 OK`
+- `http://192.168.91.157:100/` responded with HTTP `200 OK`
+- TCP port `5900` accepted a live connection on `192.168.91.157`
+- the status page reported `LAN + WiFi STA + AP`
+- the status page reported `LAN active, WiFi STA connected, AP active`
+- the status page reported `Bode services running`
+- the status page reported `Time synced via WiFi STA`
+- the status page reported the scope as reachable and both proxies as listening
+
+Observed real save behavior through the final Web UI:
+
+- POST `/save` for `service_limits` with unchanged values returned `No changes saved`
+- POST `/save` changing `max_web_ui_clients` from `6` to `7` returned `Configuration saved`
+- a follow-up GET `/network` reflected `max_web_ui_clients = 7`
+- POST `/save` restoring `max_web_ui_clients` from `7` back to `6` returned `Configuration saved`
+- a follow-up GET `/network` reflected `max_web_ui_clients = 6`
+
+## Coverage Limits In This Pass
+
+- The live scope browser workflow on port `100` and the live noVNC workflow on port `5900` were not re-driven end-to-end in this exact final pass.
+- Deliberate corruption of stored configuration was not forced on hardware in this pass because it would require destructive manipulation of `NVS`; that path was audited in code, while first boot on erased `NVS` was reproduced for real.
+- Auxiliary environments `wt32eth_bringup_safe` and `wt32eth_final_test_safe` were not re-flashed in this final pass.
+
+## Local Validation Reports
+
+Detailed local audit and validation notes for this pass are recorded in:
+
+- `debug/final_nvs_policy_audit.txt`
+- `debug/final_default_network_policy.txt`
+- `debug/final_release_validation.txt`

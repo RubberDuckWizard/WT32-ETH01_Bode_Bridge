@@ -181,14 +181,19 @@
 #define FW_BUILD_STRING __DATE__ " " __TIME__
 
 /* Default runtime configuration */
-#define DEF_USE_DHCP                   0
+#define DEF_USE_DHCP                   1
 #define DEF_IP                         10, 11, 13, 221
 #define DEF_MASK                       255, 255, 255, 0
 #define DEF_GW                         10, 11, 13, 1
 #define DEF_DNS                        10, 11, 13, 1
 #define DEF_DNS2                       10, 11, 13, 1
-#define DEF_LAN_IP                     10, 11, 13, 221
-#define DEF_LAN_MASK                   255, 255, 255, 0
+#define DEF_STA_IP                     0, 0, 0, 0
+#define DEF_STA_MASK                   0, 0, 0, 0
+#define DEF_STA_GW                     0, 0, 0, 0
+#define DEF_STA_DNS                    0, 0, 0, 0
+#define DEF_STA_DNS2                   0, 0, 0, 0
+#define DEF_LAN_IP                     DEF_IP
+#define DEF_LAN_MASK                   DEF_MASK
 #define DEF_SCOPE_IP                   10, 11, 13, 220
 #define DEF_SCOPE_PORT                 80U
 #define DEF_SCOPE_HTTP_PROXY_ENABLE    1
@@ -211,18 +216,30 @@
 #define NTP_VALID_UNIX_THRESHOLD       1700000000UL
 
 #define LAN_NTP_PORT                   123U
+#define NTP_RATE_LIMIT_WINDOW_MS       1000U
+#define NTP_RATE_LIMIT_GLOBAL_MAX      16U
+#define NTP_RATE_LIMIT_PER_IP_MAX       8U
+#define NTP_RATE_LIMIT_TRACKED_IPS      4U
+
+#define WEB_UI_LISTEN_PORT             80U
+#define MIN_WEB_SERVICE_CLIENTS         2U
+#define MAX_WEB_SERVICE_CLIENTS        30U
+#define DEF_WEB_UI_MAX_CLIENTS          6U
+#define DEF_SCOPE_HTTP_PROXY_MAX_CLIENTS 6U
+#define DEF_SCOPE_VNC_PROXY_MAX_CLIENTS  6U
+#define WEB_UI_MAX_CONNECTION_SLOTS    MAX_WEB_SERVICE_CLIENTS
 
 #define SCOPE_HTTP_PROXY_LISTEN_PORT   100U
 #define SCOPE_HTTP_PROXY_TARGET_PORT    80U
-#define SCOPE_HTTP_PROXY_MAX_CONNECTIONS 12U
-#define SCOPE_HTTP_PROXY_MAX_UPSTREAMS  4U
+#define SCOPE_HTTP_PROXY_MAX_CONNECTIONS MAX_WEB_SERVICE_CLIENTS
+#define SCOPE_HTTP_PROXY_MAX_UPSTREAMS  MAX_WEB_SERVICE_CLIENTS
 #define SCOPE_HTTP_PROXY_IDLE_TIMEOUT_MS 15000U
 #define SCOPE_HTTP_PROXY_BUFFER_SIZE   256U
 #define SCOPE_HTTP_PROXY_SNIFF_BYTES   768U
 
 #define SCOPE_VNC_PROXY_LISTEN_PORT    5900U
 #define SCOPE_VNC_PROXY_TARGET_PORT    5900U
-#define SCOPE_VNC_PROXY_MAX_CONNECTIONS 2U
+#define SCOPE_VNC_PROXY_MAX_CONNECTIONS MAX_WEB_SERVICE_CLIENTS
 #define SCOPE_VNC_PROXY_IDLE_TIMEOUT_MS 20000U
 #define SCOPE_VNC_PROXY_BUFFER_SIZE    384U
 #define SCOPE_VNC_PROXY_SNIFF_BYTES    512U
@@ -248,6 +265,8 @@
 #define RECOVERY_AP_MIN_PASSWORD_LEN 8U
 #define RECOVERY_AP_IP            192, 168, 4, 1
 #define RECOVERY_AP_MASK          255, 255, 255, 0
+#define DEF_AP_IP                 RECOVERY_AP_IP
+#define DEF_AP_MASK               RECOVERY_AP_MASK
 
 #define AWG_FW_FAMILY_OLDER        0u
 #define AWG_FW_FAMILY_LATER_FY6900 1u

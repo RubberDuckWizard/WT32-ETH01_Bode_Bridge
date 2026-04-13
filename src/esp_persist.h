@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define CONFIG_VERSION      9
+#define CONFIG_VERSION      10
 #define CONFIG_EEPROM_ADDR  0
 #define CONFIG_EEPROM_SIZE  256
 
@@ -12,6 +12,9 @@ struct EspConfig {
     uint8_t  use_dhcp;
     uint8_t  recovery_ap_enable;
     uint8_t  scope_http_proxy_enable;
+    uint8_t  max_web_ui_clients;
+    uint8_t  max_scope_http_proxy_clients;
+    uint8_t  max_scope_vnc_proxy_clients;
     uint8_t  ip[4];
     uint8_t  mask[4];
     uint8_t  gw[4];
@@ -37,7 +40,7 @@ struct EspConfig {
     uint16_t auto_output_off_timeout_ms;
     uint32_t awg_baud;
     uint8_t  awg_firmware_family;
-    uint8_t  reserved1[3];
+    uint8_t  reserved1[1];
 };
 
 extern EspConfig g_config;
@@ -46,6 +49,8 @@ bool loadConfig();
 bool saveConfig();
 void resetConfigToDefaults();
 bool config_store_was_valid();
+bool config_store_needs_commit();
+bool config_last_save_wrote();
 bool config_current_is_valid();
 bool config_has_valid_sta_settings();
 

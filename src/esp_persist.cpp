@@ -9,6 +9,10 @@
 
 EspConfig g_config;
 static bool s_store_was_valid = false;
+static EspConfig s_persisted_config;
+static bool s_persisted_config_known = false;
+static bool s_store_needs_commit = false;
+static bool s_last_save_wrote = false;
 
 namespace {
 
@@ -17,11 +21,11 @@ Preferences s_prefs;
 const char *const kPrefsNamespace = "espbode";
 const uint8_t kIpv4Len = 4u;
 
-static const uint8_t kDefIp[] = { DEF_IP };
-static const uint8_t kDefMask[] = { DEF_MASK };
-static const uint8_t kDefGw[] = { DEF_GW };
-static const uint8_t kDefDns[] = { DEF_DNS };
-static const uint8_t kDefDns2[] = { DEF_DNS2 };
+static const uint8_t kDefStaIp[] = { DEF_STA_IP };
+static const uint8_t kDefStaMask[] = { DEF_STA_MASK };
+static const uint8_t kDefStaGw[] = { DEF_STA_GW };
+static const uint8_t kDefStaDns[] = { DEF_STA_DNS };
+static const uint8_t kDefStaDns2[] = { DEF_STA_DNS2 };
 static const uint8_t kDefLanIp[] = { DEF_LAN_IP };
 static const uint8_t kDefLanMask[] = { DEF_LAN_MASK };
 static const uint8_t kDefScopeIp[] = { DEF_SCOPE_IP };
@@ -42,6 +46,39 @@ struct LegacyConfig {
     uint16_t crc;
 };
 
+enum NormalizeFlags : uint32_t {
+    kNormalizeNone = 0u,
+    kNormalizeVersion = 1u << 0,
+    kNormalizeHostname = 1u << 1,
+    kNormalizeApSsid = 1u << 2,
+    kNormalizeApPassword = 1u << 3,
+    kNormalizeNtpServer = 1u << 4,
+    kNormalizeFriendlyName = 1u << 5,
+    kNormalizeIdnName = 1u << 6,
+    kNormalizeAwgSerialMode = 1u << 7,
+    kNormalizeAwgBaud = 1u << 8,
+    kNormalizeAwgFamily = 1u << 9,
+    kNormalizeScopePort = 1u << 10,
+    kNormalizeScopeTimeout = 1u << 11,
+    kNormalizeScopeProbe = 1u << 12,
+    kNormalizeVxiTimeout = 1u << 13,
+    kNormalizeAwgTimeout = 1u << 14,
+    kNormalizeAutoOffTimeout = 1u << 15,
+    kNormalizeRecoveryApEnable = 1u << 16,
+    kNormalizeScopeProxyEnable = 1u << 17,
+    kNormalizeWebLimit = 1u << 18,
+    kNormalizeProxyLimit = 1u << 19,
+    kNormalizeVncLimit = 1u << 20,
+    kNormalizeWiFiTuple = 1u << 21,
+    kNormalizeDns2 = 1u << 22,
+    kNormalizeLanTuple = 1u << 23,
+    kNormalizeScopeIp = 1u << 24,
+    kNormalizeWiFiLanConflict = 1u << 25,
+    kNormalizeWiFiSsid = 1u << 26,
+    kNormalizeWiFiPassword = 1u << 27,
+    kNormalizeUseDhcp = 1u << 28
+};
+
 static bool recovery_ap_password_can_be_open()
 {
     return FW_FORCE_RECOVERY_AP != 0;
@@ -58,6 +95,39 @@ static void copy_text(char *dst, size_t dst_len, const char *src)
 static void copy_ip(uint8_t *dst, const uint8_t *src)
 {
     memcpy(dst, src, kIpv4Len);
+}
+
+static bool config_equals(const EspConfig &left, const EspConfig &right)
+{
+    return memcmp(&left, &right, sizeof(EspConfig)) == 0;
+}
+
+static void remember_persisted_config(const EspConfig &cfg)
+{
+    s_persisted_config = cfg;
+    s_persisted_config_known = true;
+    s_store_needs_commit = false;
+}
+
+static bool normalize_flags_require_boot_save(uint32_t flags)
+{
+    const uint32_t critical = kNormalizeVersion
+        | kNormalizeApSsid
+        | kNormalizeApPassword
+        | kNormalizeAwgSerialMode
+        | kNormalizeAwgBaud
+        | kNormalizeAwgFamily
+        | kNormalizeScopePort
+        | kNormalizeScopeTimeout
+        | kNormalizeScopeProbe
+        | kNormalizeVxiTimeout
+        | kNormalizeAwgTimeout
+        | kNormalizeWiFiTuple
+        | kNormalizeLanTuple
+        | kNormalizeScopeIp
+        | kNormalizeWiFiLanConflict;
+
+    return (flags & critical) != 0u;
 }
 
 static uint32_t ip_to_u32(const uint8_t *ip4)
@@ -224,6 +294,17 @@ static bool idn_name_is_valid(const char *text)
     return true;
 }
 
+static uint8_t normalize_web_service_client_limit(uint8_t value)
+{
+    if (value < MIN_WEB_SERVICE_CLIENTS) {
+        return MIN_WEB_SERVICE_CLIENTS;
+    }
+    if (value > MAX_WEB_SERVICE_CLIENTS) {
+        return MAX_WEB_SERVICE_CLIENTS;
+    }
+    return value;
+}
+
 static void set_default_config(EspConfig *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
@@ -231,12 +312,15 @@ static void set_default_config(EspConfig *cfg)
     cfg->use_dhcp = DEF_USE_DHCP;
     cfg->recovery_ap_enable = DEF_RECOVERY_AP_ENABLE;
     cfg->scope_http_proxy_enable = DEF_SCOPE_HTTP_PROXY_ENABLE;
+    cfg->max_web_ui_clients = DEF_WEB_UI_MAX_CLIENTS;
+    cfg->max_scope_http_proxy_clients = DEF_SCOPE_HTTP_PROXY_MAX_CLIENTS;
+    cfg->max_scope_vnc_proxy_clients = DEF_SCOPE_VNC_PROXY_MAX_CLIENTS;
 
-    copy_ip(cfg->ip, kDefIp);
-    copy_ip(cfg->mask, kDefMask);
-    copy_ip(cfg->gw, kDefGw);
-    copy_ip(cfg->dns, kDefDns);
-    copy_ip(cfg->dns2, kDefDns2);
+    copy_ip(cfg->ip, kDefStaIp);
+    copy_ip(cfg->mask, kDefStaMask);
+    copy_ip(cfg->gw, kDefStaGw);
+    copy_ip(cfg->dns, kDefStaDns);
+    copy_ip(cfg->dns2, kDefStaDns2);
     copy_ip(cfg->lan_ip, kDefLanIp);
     copy_ip(cfg->lan_mask, kDefLanMask);
     copy_ip(cfg->scope_ip, kDefScopeIp);
@@ -261,10 +345,13 @@ static void set_default_config(EspConfig *cfg)
     cfg->awg_firmware_family = DEF_AWG_FW_FAMILY;
 }
 
-static bool normalize_config(EspConfig *cfg)
+static uint32_t normalize_config(EspConfig *cfg)
 {
-    bool valid = true;
+    uint32_t flags = kNormalizeNone;
 
+    if (cfg->version != CONFIG_VERSION) {
+        flags |= kNormalizeVersion;
+    }
     cfg->version = CONFIG_VERSION;
     cfg->device_hostname[sizeof(cfg->device_hostname) - 1] = '\0';
     cfg->wifi_ssid[sizeof(cfg->wifi_ssid) - 1] = '\0';
@@ -276,135 +363,148 @@ static bool normalize_config(EspConfig *cfg)
     cfg->idn_response_name[sizeof(cfg->idn_response_name) - 1] = '\0';
     cfg->awg_serial_mode[sizeof(cfg->awg_serial_mode) - 1] = '\0';
 
+    if (cfg->use_dhcp > 1u) {
+        cfg->use_dhcp = DEF_USE_DHCP;
+        flags |= kNormalizeUseDhcp;
+    }
+
     if (!hostname_is_valid(cfg->device_hostname)) {
         copy_text(cfg->device_hostname, sizeof(cfg->device_hostname), DEF_DEVICE_HOSTNAME);
-        valid = false;
+        flags |= kNormalizeHostname;
     }
     if (!recovery_ap_ssid_is_valid(cfg->ap_ssid)) {
         copy_text(cfg->ap_ssid, sizeof(cfg->ap_ssid), DEF_RECOVERY_AP_SSID);
-        valid = false;
+        flags |= kNormalizeApSsid;
     }
     if (!recovery_ap_password_is_valid(cfg->ap_password)) {
         copy_text(cfg->ap_password, sizeof(cfg->ap_password), DEF_RECOVERY_AP_PASSWORD);
-        valid = false;
+        flags |= kNormalizeApPassword;
     }
     if (!idn_name_is_valid(cfg->ntp_server)) {
         copy_text(cfg->ntp_server, sizeof(cfg->ntp_server), DEF_NTP_SERVER);
-        valid = false;
+        flags |= kNormalizeNtpServer;
     }
     if (!safe_ascii_text(cfg->friendly_name, sizeof(cfg->friendly_name) - 1, true)) {
         copy_text(cfg->friendly_name, sizeof(cfg->friendly_name), DEF_FRIENDLY_NAME);
-        valid = false;
+        flags |= kNormalizeFriendlyName;
     }
     if (!idn_name_is_valid(cfg->idn_response_name)) {
         copy_text(cfg->idn_response_name, sizeof(cfg->idn_response_name), DEF_IDN_RESPONSE_NAME);
-        valid = false;
+        flags |= kNormalizeIdnName;
     }
     if (!fy_is_supported_serial_mode(cfg->awg_serial_mode)) {
         copy_text(cfg->awg_serial_mode, sizeof(cfg->awg_serial_mode), DEF_AWG_SERIAL_MODE);
-        valid = false;
+        flags |= kNormalizeAwgSerialMode;
     }
     if (!fy_is_supported_baud(cfg->awg_baud)) {
         cfg->awg_baud = AWG_BAUD_RATE;
-        valid = false;
+        flags |= kNormalizeAwgBaud;
     }
     if (!fy_is_supported_firmware_family(cfg->awg_firmware_family)) {
         cfg->awg_firmware_family = DEF_AWG_FW_FAMILY;
-        valid = false;
+        flags |= kNormalizeAwgFamily;
     }
     if (cfg->scope_port == 0u) {
         cfg->scope_port = DEF_SCOPE_PORT;
-        valid = false;
+        flags |= kNormalizeScopePort;
     }
     if (cfg->scope_connect_timeout_ms < MIN_SCOPE_TIMEOUT_MS || cfg->scope_connect_timeout_ms > MAX_SCOPE_TIMEOUT_MS) {
         cfg->scope_connect_timeout_ms = DEF_SCOPE_CONNECT_TIMEOUT_MS;
-        valid = false;
+        flags |= kNormalizeScopeTimeout;
     }
     if (cfg->scope_probe_interval_ms < MIN_SCOPE_INTERVAL_MS || cfg->scope_probe_interval_ms > MAX_SCOPE_INTERVAL_MS) {
         cfg->scope_probe_interval_ms = DEF_SCOPE_PROBE_INTERVAL_MS;
-        valid = false;
+        flags |= kNormalizeScopeProbe;
     }
     if (cfg->vxi_session_timeout_ms < MIN_VXI_TIMEOUT_MS || cfg->vxi_session_timeout_ms > MAX_VXI_TIMEOUT_MS) {
         cfg->vxi_session_timeout_ms = DEF_VXI_SESSION_TIMEOUT_MS;
-        valid = false;
+        flags |= kNormalizeVxiTimeout;
     }
     if (cfg->awg_serial_timeout_ms < MIN_AWG_TIMEOUT_MS || cfg->awg_serial_timeout_ms > MAX_AWG_TIMEOUT_MS) {
         cfg->awg_serial_timeout_ms = DEF_AWG_SERIAL_TIMEOUT_MS;
-        valid = false;
+        flags |= kNormalizeAwgTimeout;
     }
     if (cfg->auto_output_off_timeout_ms < MIN_AUTO_OFF_TIMEOUT_MS || cfg->auto_output_off_timeout_ms > MAX_AUTO_OFF_TIMEOUT_MS) {
         cfg->auto_output_off_timeout_ms = DEF_AUTO_OUTPUT_OFF_TIMEOUT_MS;
-        valid = false;
+        flags |= kNormalizeAutoOffTimeout;
     }
     if (cfg->recovery_ap_enable > 1u) {
         cfg->recovery_ap_enable = DEF_RECOVERY_AP_ENABLE;
-        valid = false;
+        flags |= kNormalizeRecoveryApEnable;
     }
     if (cfg->scope_http_proxy_enable > 1u) {
         cfg->scope_http_proxy_enable = DEF_SCOPE_HTTP_PROXY_ENABLE;
-        valid = false;
+        flags |= kNormalizeScopeProxyEnable;
     }
-
-    if (!subnet_is_valid(cfg->mask)
-            || !host_is_valid_for_mask(cfg->ip, cfg->mask)
-            || !host_is_valid_for_mask(cfg->gw, cfg->mask)
-            || !same_subnet(cfg->ip, cfg->gw, cfg->mask)) {
-        copy_ip(cfg->ip, kDefIp);
-        copy_ip(cfg->mask, kDefMask);
-        copy_ip(cfg->gw, kDefGw);
-        copy_ip(cfg->dns, kDefDns);
-        copy_ip(cfg->dns2, kDefDns2);
-        valid = false;
+    if (cfg->max_web_ui_clients != normalize_web_service_client_limit(cfg->max_web_ui_clients)) {
+        cfg->max_web_ui_clients = normalize_web_service_client_limit(cfg->max_web_ui_clients);
+        flags |= kNormalizeWebLimit;
     }
-    if (!nonzero_ip_is_valid(cfg->dns)) {
-        copy_ip(cfg->dns, kDefDns);
-        valid = false;
+    if (cfg->max_scope_http_proxy_clients != normalize_web_service_client_limit(cfg->max_scope_http_proxy_clients)) {
+        cfg->max_scope_http_proxy_clients = normalize_web_service_client_limit(cfg->max_scope_http_proxy_clients);
+        flags |= kNormalizeProxyLimit;
     }
-    if (!ip_is_zero(cfg->dns2) && !nonzero_ip_is_valid(cfg->dns2)) {
-        copy_ip(cfg->dns2, kDefDns2);
-        valid = false;
+    if (cfg->max_scope_vnc_proxy_clients != normalize_web_service_client_limit(cfg->max_scope_vnc_proxy_clients)) {
+        cfg->max_scope_vnc_proxy_clients = normalize_web_service_client_limit(cfg->max_scope_vnc_proxy_clients);
+        flags |= kNormalizeVncLimit;
     }
 #if ENABLE_ETH_RUNTIME
     if (!subnet_is_valid(cfg->lan_mask) || !host_is_valid_for_mask(cfg->lan_ip, cfg->lan_mask)) {
         copy_ip(cfg->lan_ip, kDefLanIp);
         copy_ip(cfg->lan_mask, kDefLanMask);
-        valid = false;
+        flags |= kNormalizeLanTuple;
     }
     if (!nonzero_ip_is_valid(cfg->scope_ip)
             || !same_subnet(cfg->scope_ip, cfg->lan_ip, cfg->lan_mask)
             || ip_to_u32(cfg->scope_ip) == ip_to_u32(cfg->lan_ip)) {
         normalize_scope_ip_for_lan(cfg->scope_ip, cfg->lan_ip, cfg->lan_mask);
-        valid = false;
-    }
-    if (!cfg->use_dhcp && same_subnet(cfg->ip, cfg->lan_ip, cfg->lan_mask)) {
-        cfg->use_dhcp = 1u;
-        valid = false;
+        flags |= kNormalizeScopeIp;
     }
 #else
     if (!nonzero_ip_is_valid(cfg->scope_ip)) {
         copy_ip(cfg->scope_ip, kDefScopeIp);
-        valid = false;
+        flags |= kNormalizeScopeIp;
     }
 #endif
+
+    if (!cfg->use_dhcp) {
+        if (!subnet_is_valid(cfg->mask)
+                || !host_is_valid_for_mask(cfg->ip, cfg->mask)
+                || !host_is_valid_for_mask(cfg->gw, cfg->mask)
+                || !same_subnet(cfg->ip, cfg->gw, cfg->mask)
+                || !nonzero_ip_is_valid(cfg->dns)) {
+            cfg->use_dhcp = 1u;
+            flags |= kNormalizeWiFiTuple | kNormalizeUseDhcp;
+        } else if (!ip_is_zero(cfg->dns2) && !nonzero_ip_is_valid(cfg->dns2)) {
+            copy_ip(cfg->dns2, kDefStaDns2);
+            flags |= kNormalizeDns2;
+        }
+#if ENABLE_ETH_RUNTIME
+        if (!cfg->use_dhcp && same_subnet(cfg->ip, cfg->lan_ip, cfg->lan_mask)) {
+            cfg->use_dhcp = 1u;
+            flags |= kNormalizeWiFiLanConflict | kNormalizeUseDhcp;
+        }
+#endif
+    }
 
     if (cfg->wifi_ssid[0] != '\0' && !safe_ascii_text(cfg->wifi_ssid, sizeof(cfg->wifi_ssid) - 1, true)) {
         cfg->wifi_ssid[0] = '\0';
         cfg->wifi_password[0] = '\0';
-        valid = false;
+        flags |= kNormalizeWiFiSsid | kNormalizeWiFiPassword;
     }
     if (cfg->wifi_ssid[0] == '\0' && cfg->wifi_password[0] != '\0') {
         cfg->wifi_password[0] = '\0';
-        valid = false;
+        flags |= kNormalizeWiFiPassword;
     }
     if (cfg->wifi_password[0] != '\0') {
         size_t pass_len = strlen(cfg->wifi_password);
         if (pass_len < 8u || pass_len > 63u || !safe_ascii_text(cfg->wifi_password, sizeof(cfg->wifi_password) - 1, true)) {
             cfg->wifi_password[0] = '\0';
-            valid = false;
+            flags |= kNormalizeWiFiPassword;
         }
     }
 
-    return valid;
+    return flags;
 }
 
 static uint16_t crc16_ccitt(const void *data, size_t len)
@@ -456,6 +556,7 @@ static bool migrate_legacy_eeprom()
     g_config.awg_baud = legacy.awg_baud;
     g_config.awg_firmware_family = legacy.awg_firmware_family;
 
+    s_store_needs_commit = true;
     (void)normalize_config(&g_config);
     (void)saveConfig();
     return true;
@@ -469,6 +570,9 @@ static void load_from_preferences()
     g_config.use_dhcp = s_prefs.getBool("dhcp", DEF_USE_DHCP) ? 1u : 0u;
     g_config.recovery_ap_enable = s_prefs.getBool("recovery_ap", DEF_RECOVERY_AP_ENABLE) ? 1u : 0u;
     g_config.scope_http_proxy_enable = s_prefs.getBool("scope_proxy", DEF_SCOPE_HTTP_PROXY_ENABLE) ? 1u : 0u;
+    g_config.max_web_ui_clients = s_prefs.getUChar("web_max", DEF_WEB_UI_MAX_CLIENTS);
+    g_config.max_scope_http_proxy_clients = s_prefs.getUChar("proxy_max", DEF_SCOPE_HTTP_PROXY_MAX_CLIENTS);
+    g_config.max_scope_vnc_proxy_clients = s_prefs.getUChar("vnc_max", DEF_SCOPE_VNC_PROXY_MAX_CLIENTS);
     g_config.scope_port = s_prefs.getUShort("scope_port", DEF_SCOPE_PORT);
     g_config.scope_connect_timeout_ms = s_prefs.getUShort("scope_conn_to", DEF_SCOPE_CONNECT_TIMEOUT_MS);
     g_config.scope_probe_interval_ms = s_prefs.getUShort("scope_probe_ms", DEF_SCOPE_PROBE_INTERVAL_MS);
@@ -502,8 +606,13 @@ static void load_from_preferences()
 
 bool loadConfig()
 {
+    uint32_t normalize_flags;
+
     set_default_config(&g_config);
     s_store_was_valid = false;
+    s_store_needs_commit = false;
+    s_persisted_config_known = false;
+    s_last_save_wrote = false;
 
     if (!s_prefs.begin(kPrefsNamespace, false)) {
         return false;
@@ -522,18 +631,34 @@ bool loadConfig()
     load_from_preferences();
     s_prefs.end();
 
-    s_store_was_valid = normalize_config(&g_config);
-    if (!s_store_was_valid) {
+    normalize_flags = normalize_config(&g_config);
+    s_store_was_valid = normalize_flags == kNormalizeNone;
+    if (s_store_was_valid) {
+        remember_persisted_config(g_config);
+        return true;
+    }
+
+    s_store_needs_commit = true;
+    if (normalize_flags_require_boot_save(normalize_flags)) {
         (void)saveConfig();
     }
-    return s_store_was_valid;
+    return true;
 }
 
 bool saveConfig()
 {
     (void)normalize_config(&g_config);
 
+    if (!s_store_needs_commit
+            && s_persisted_config_known
+            && config_equals(g_config, s_persisted_config)) {
+        s_last_save_wrote = false;
+        return true;
+    }
+
     if (!s_prefs.begin(kPrefsNamespace, false)) {
+        s_last_save_wrote = false;
+        s_store_needs_commit = true;
         return false;
     }
 
@@ -541,6 +666,9 @@ bool saveConfig()
     s_prefs.putBool("dhcp", g_config.use_dhcp != 0u);
     s_prefs.putBool("recovery_ap", g_config.recovery_ap_enable != 0u);
     s_prefs.putBool("scope_proxy", g_config.scope_http_proxy_enable != 0u);
+    s_prefs.putUChar("web_max", g_config.max_web_ui_clients);
+    s_prefs.putUChar("proxy_max", g_config.max_scope_http_proxy_clients);
+    s_prefs.putUChar("vnc_max", g_config.max_scope_vnc_proxy_clients);
     s_prefs.putUShort("scope_port", g_config.scope_port);
     s_prefs.putUShort("scope_conn_to", g_config.scope_connect_timeout_ms);
     s_prefs.putUShort("scope_probe_ms", g_config.scope_probe_interval_ms);
@@ -570,7 +698,8 @@ bool saveConfig()
     s_prefs.putString("fy_mode", g_config.awg_serial_mode);
     s_prefs.end();
 
-    s_store_was_valid = config_current_is_valid();
+    remember_persisted_config(g_config);
+    s_last_save_wrote = true;
     return true;
 }
 
@@ -584,10 +713,20 @@ bool config_store_was_valid()
     return s_store_was_valid;
 }
 
+bool config_store_needs_commit()
+{
+    return s_store_needs_commit;
+}
+
+bool config_last_save_wrote()
+{
+    return s_last_save_wrote;
+}
+
 bool config_current_is_valid()
 {
     EspConfig copy = g_config;
-    return normalize_config(&copy);
+    return normalize_config(&copy) == kNormalizeNone;
 }
 
 bool config_has_valid_sta_settings()

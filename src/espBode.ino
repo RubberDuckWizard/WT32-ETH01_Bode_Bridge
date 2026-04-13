@@ -87,6 +87,10 @@ void setup()
         g_config.use_dhcp ? "on" : "off",
         (unsigned long)ESP.getFreeHeap());
     Serial.printf("ntp_upstream=%s\r\n", g_config.ntp_server);
+    Serial.printf("service_limits web=%u proxy_http=%u proxy_vnc=%u\r\n",
+        (unsigned)g_config.max_web_ui_clients,
+        (unsigned)g_config.max_scope_http_proxy_clients,
+        (unsigned)g_config.max_scope_vnc_proxy_clients);
     if (!g_config.use_dhcp) {
         Serial.printf("static_ip=%u.%u.%u.%u mask=%u.%u.%u.%u gw=%u.%u.%u.%u dns=%u.%u.%u.%u\r\n",
             g_config.ip[0], g_config.ip[1], g_config.ip[2], g_config.ip[3],
@@ -165,7 +169,15 @@ void setup()
         runtime_net_ntp_server_running() ? "on" : "off",
         runtime_net_time_status_text(),
         g_config.scope_ip[0], g_config.scope_ip[1], g_config.scope_ip[2], g_config.scope_ip[3]);
-    Serial.printf("proxy_http supported=%s enabled=%s listening=%s port=%u target=%u.%u.%u.%u:%u active=%u last_error=%s\r\n",
+    Serial.printf("ntp_policy lan_only=%s subnet_filter=%s rate_limit=%s per_ip=%u global=%u drops_policy=%lu drops_rate=%lu\r\n",
+        runtime_net_ntp_lan_only() ? "yes" : "no",
+        runtime_net_ntp_subnet_restriction_active() ? "yes" : "no",
+        runtime_net_ntp_rate_limit_active() ? "yes" : "no",
+        (unsigned)runtime_net_ntp_rate_limit_per_ip(),
+        (unsigned)runtime_net_ntp_rate_limit_global(),
+        (unsigned long)runtime_net_ntp_policy_drop_count(),
+        (unsigned long)runtime_net_ntp_rate_limit_drop_count());
+    Serial.printf("proxy_http supported=%s enabled=%s listening=%s port=%u target=%u.%u.%u.%u:%u active=%u max=%u last_error=%s\r\n",
         scope_http_proxy_is_supported() ? "yes" : "no",
         scope_http_proxy_is_enabled() ? "yes" : "no",
         scope_http_proxy_is_listening() ? "yes" : "no",
@@ -173,8 +185,9 @@ void setup()
         g_config.scope_ip[0], g_config.scope_ip[1], g_config.scope_ip[2], g_config.scope_ip[3],
         (unsigned)SCOPE_HTTP_PROXY_TARGET_PORT,
         (unsigned)scope_http_proxy_get_stats()->active_connections,
+        (unsigned)scope_http_proxy_get_stats()->max_connections,
         scope_http_proxy_get_stats()->last_error);
-    Serial.printf("proxy_vnc supported=%s enabled=%s listening=%s port=%u target=%u.%u.%u.%u:%u active=%u last_error=%s\r\n",
+    Serial.printf("proxy_vnc supported=%s enabled=%s listening=%s port=%u target=%u.%u.%u.%u:%u active=%u max=%u last_error=%s\r\n",
         scope_vnc_proxy_is_supported() ? "yes" : "no",
         scope_vnc_proxy_is_enabled() ? "yes" : "no",
         scope_vnc_proxy_is_listening() ? "yes" : "no",
@@ -182,6 +195,7 @@ void setup()
         g_config.scope_ip[0], g_config.scope_ip[1], g_config.scope_ip[2], g_config.scope_ip[3],
         (unsigned)SCOPE_VNC_PROXY_TARGET_PORT,
         (unsigned)scope_vnc_proxy_get_stats()->active_connections,
+        (unsigned)scope_vnc_proxy_get_stats()->max_connections,
         scope_vnc_proxy_get_stats()->last_error);
     Serial.printf("fy_status=%s fy_enabled=%s\r\n",
         fy_status_text(),

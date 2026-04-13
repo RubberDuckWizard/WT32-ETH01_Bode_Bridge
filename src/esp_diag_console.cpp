@@ -108,7 +108,15 @@ static void cmd_status(void)
         runtime_net_lan_subnet().toString().c_str(),
         runtime_net_ntp_server_running() ? runtime_net_time_status_text() : "disabled",
         (unsigned long)runtime_net_ntp_request_count());
-    diag_printf("ntp upstream=%s\r\n", g_config.ntp_server);
+    diag_printf("ntp upstream=%s lan_only=%s subnet_filter=%s rate_limit=%s per_ip=%u global=%u drops=%lu/%lu\r\n",
+        g_config.ntp_server,
+        runtime_net_ntp_lan_only() ? "yes" : "no",
+        runtime_net_ntp_subnet_restriction_active() ? "yes" : "no",
+        runtime_net_ntp_rate_limit_active() ? "yes" : "no",
+        (unsigned)runtime_net_ntp_rate_limit_per_ip(),
+        (unsigned)runtime_net_ntp_rate_limit_global(),
+        (unsigned long)runtime_net_ntp_policy_drop_count(),
+        (unsigned long)runtime_net_ntp_rate_limit_drop_count());
     diag_printf("wifi sta_valid=%s connecting=%s connected=%s ssid=%s ip=%s ap=%s\r\n",
         runtime_net_sta_config_valid() ? "yes" : "no",
         runtime_net_sta_connecting() ? "yes" : "no",
@@ -133,6 +141,10 @@ static void cmd_status(void)
         config_current_is_valid() ? "yes" : "no",
         g_config.use_dhcp ? "on" : "off",
         g_config.device_hostname);
+    diag_printf("limits web=%u http=%u vnc=%u\r\n",
+        (unsigned)g_config.max_web_ui_clients,
+        (unsigned)g_config.max_scope_http_proxy_clients,
+        (unsigned)g_config.max_scope_vnc_proxy_clients);
     diag_printf("awg enabled=%s baud=%lu trace=%s\r\n",
         fy_is_enabled() ? "yes" : "no",
         (unsigned long)fy_get_baud(),
@@ -167,8 +179,9 @@ static void cmd_eth(void)
 
 static void cmd_cfg_show(void)
 {
-    diag_printf("stored_valid=%s current_crc=%s version=%u\r\n",
+    diag_printf("stored_valid=%s pending_commit=%s current_crc=%s version=%u\r\n",
         config_store_was_valid() ? "yes" : "no",
+        config_store_needs_commit() ? "yes" : "no",
         config_current_is_valid() ? "yes" : "no",
         g_config.version);
     diag_printf("hostname=%s friendly=%s idn=%s dhcp=%s\r\n",
@@ -189,9 +202,11 @@ static void cmd_cfg_show(void)
 
 static void cmd_cfg_reset(void)
 {
-    diag_printf("restoring defaults and rebooting\r\n");
     config_reset_defaults();
     config_save();
+    diag_printf(config_last_save_wrote()
+            ? "restoring defaults, NVS updated, rebooting\r\n"
+            : "defaults already active, NVS unchanged, rebooting\r\n");
     delay(200);
     ESP.restart();
 }
@@ -200,7 +215,10 @@ static void cmd_cfg_dhcp(bool enabled)
 {
     g_config.use_dhcp = enabled ? 1 : 0;
     config_save();
-    diag_printf("dhcp=%s saved; reboot to reapply\r\n", enabled ? "on" : "off");
+    diag_printf(config_last_save_wrote()
+            ? "dhcp=%s saved; reboot to reapply\r\n"
+            : "dhcp=%s unchanged; NVS not rewritten\r\n",
+        enabled ? "on" : "off");
 }
 
 static void cmd_cfg_ip(char *args)
@@ -216,7 +234,9 @@ static void cmd_cfg_ip(char *args)
         return;
     }
     config_save();
-    diag_printf("static ip tuple saved; reboot to reapply\r\n");
+    diag_printf(config_last_save_wrote()
+            ? "static ip tuple saved; reboot to reapply\r\n"
+            : "static ip tuple unchanged; NVS not rewritten\r\n");
 }
 
 static void cmd_rpc(void)

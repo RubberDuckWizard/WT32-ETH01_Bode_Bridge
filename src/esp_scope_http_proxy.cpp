@@ -33,6 +33,19 @@ static ProxyConnection s_connections[SCOPE_HTTP_PROXY_MAX_CONNECTIONS];
 static bool s_initialized = false;
 static bool s_listening = false;
 
+static uint8_t proxy_max_connections()
+{
+    uint8_t value = g_config.max_scope_http_proxy_clients;
+
+    if (value < MIN_WEB_SERVICE_CLIENTS) {
+        value = MIN_WEB_SERVICE_CLIENTS;
+    }
+    if (value > SCOPE_HTTP_PROXY_MAX_CONNECTIONS) {
+        value = SCOPE_HTTP_PROXY_MAX_CONNECTIONS;
+    }
+    return value;
+}
+
 static void update_runtime_flags()
 {
     uint8_t active = 0;
@@ -41,6 +54,7 @@ static void update_runtime_flags()
     s_stats.enabled = g_config.scope_http_proxy_enable != 0u;
     s_stats.listening = s_listening;
     s_stats.listen_port = SCOPE_HTTP_PROXY_LISTEN_PORT;
+    s_stats.max_connections = proxy_max_connections();
     for (size_t i = 0; i < SCOPE_HTTP_PROXY_MAX_CONNECTIONS; ++i) {
         if (s_connections[i].active) {
             ++active;
@@ -95,6 +109,20 @@ static uint8_t active_upstream_count()
         }
     }
     return active;
+}
+
+static void reject_with_503(WiFiClient &incoming, const char *reason)
+{
+    incoming.setNoDelay(true);
+    (void)incoming.print(
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        "Connection: close\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 19\r\n"
+        "\r\n"
+        "Service Unavailable");
+    incoming.stop();
+    set_last_error(reason != NULL ? reason : "limit_reached");
 }
 
 static IPAddress scope_target_ip()
@@ -287,7 +315,7 @@ static bool connect_upstream(ProxyConnection *conn)
     if (conn == NULL || !conn->active || !conn->waiting_for_scope) {
         return false;
     }
-    if (active_upstream_count() >= SCOPE_HTTP_PROXY_MAX_UPSTREAMS) {
+    if (active_upstream_count() >= proxy_max_connections()) {
         return false;
     }
 
@@ -313,15 +341,18 @@ static bool open_connection(WiFiClient &incoming)
     ProxyConnection *conn;
     int slot_index;
     char target[24];
+    uint8_t active_before = s_stats.active_connections;
+    uint8_t max_connections = proxy_max_connections();
 
     slot_index = find_free_slot();
-    if (slot_index < 0) {
-        set_last_error("slot_exhausted");
+    if (slot_index < 0 || active_before >= max_connections) {
         ++s_stats.dropped_connections;
-        Serial.printf("[proxy] reject client=%s:%u reason=slot_exhausted\r\n",
+        Serial.printf("[proxy] reject client=%s:%u reason=limit_reached active=%u max=%u\r\n",
             incoming.remoteIP().toString().c_str(),
-            (unsigned)incoming.remotePort());
-        incoming.stop();
+            (unsigned)incoming.remotePort(),
+            (unsigned)active_before,
+            (unsigned)max_connections);
+        reject_with_503(incoming, "limit_reached");
         update_runtime_flags();
         return false;
     }
@@ -342,12 +373,14 @@ static bool open_connection(WiFiClient &incoming)
     update_runtime_flags();
 
     format_scope_target(target, sizeof(target));
-    Serial.printf("[proxy] accept slot=%d client=%s:%u target=%s mode=%s\r\n",
+    Serial.printf("[proxy] accept slot=%d client=%s:%u target=%s mode=%s active=%u max=%u\r\n",
         slot_index,
         conn->client_ip.toString().c_str(),
         (unsigned)conn->client_port,
         target,
-        active_upstream_count() < SCOPE_HTTP_PROXY_MAX_UPSTREAMS ? "direct" : "queued");
+        active_upstream_count() < proxy_max_connections() ? "direct" : "queued",
+        (unsigned)s_stats.active_connections,
+        (unsigned)proxy_max_connections());
     if (!connect_upstream(conn)) {
         set_last_error("scope_upstream_queued");
     }

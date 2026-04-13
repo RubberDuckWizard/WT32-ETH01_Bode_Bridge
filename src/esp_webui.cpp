@@ -15,7 +15,243 @@
 #include "esp_scope_vnc_proxy.h"
 #include "esp_webconfig.h"
 
-static WebServer s_server(80);
+namespace {
+
+struct WebUiPendingClient {
+    bool active;
+    WiFiClient client;
+    IPAddress remote_ip;
+    uint16_t remote_port;
+    uint32_t accepted_ms;
+};
+
+class LimitedWebServer : public WebServer {
+public:
+    explicit LimitedWebServer(int port)
+        : WebServer(port)
+    {
+        memset(&m_stats, 0, sizeof(m_stats));
+        clear_slots();
+        set_last_error("none");
+        m_stats.listen_port = (uint16_t)port;
+    }
+
+    void begin() override
+    {
+        WebServer::begin();
+        m_stats.listening = true;
+        update_stats();
+    }
+
+    void poll_limited()
+    {
+        if (!m_stats.listening) {
+            return;
+        }
+        accept_pending_clients();
+        process_pending_clients();
+        update_stats();
+    }
+
+    const WebUiServerStats *stats()
+    {
+        update_stats();
+        return &m_stats;
+    }
+
+private:
+    WebUiPendingClient m_slots[WEB_UI_MAX_CONNECTION_SLOTS];
+    WebUiServerStats m_stats;
+
+    static uint8_t configured_max_clients()
+    {
+        uint8_t value = g_config.max_web_ui_clients;
+
+        if (value < MIN_WEB_SERVICE_CLIENTS) {
+            value = MIN_WEB_SERVICE_CLIENTS;
+        }
+        if (value > WEB_UI_MAX_CONNECTION_SLOTS) {
+            value = WEB_UI_MAX_CONNECTION_SLOTS;
+        }
+        return value;
+    }
+
+    void clear_slots()
+    {
+        for (size_t i = 0; i < WEB_UI_MAX_CONNECTION_SLOTS; ++i) {
+            clear_slot(m_slots[i]);
+        }
+    }
+
+    void clear_slot(WebUiPendingClient &slot)
+    {
+        if (slot.client) {
+            slot.client.stop();
+        }
+        slot.active = false;
+        slot.client = WiFiClient();
+        slot.remote_ip = IPAddress();
+        slot.remote_port = 0u;
+        slot.accepted_ms = 0u;
+    }
+
+    void set_last_error(const char *text)
+    {
+        if (text == NULL) {
+            text = "unknown";
+        }
+        strncpy(m_stats.last_error, text, sizeof(m_stats.last_error) - 1u);
+        m_stats.last_error[sizeof(m_stats.last_error) - 1u] = '\0';
+    }
+
+    uint8_t active_client_count() const
+    {
+        uint8_t active = 0u;
+
+        for (size_t i = 0; i < WEB_UI_MAX_CONNECTION_SLOTS; ++i) {
+            if (m_slots[i].active) {
+                ++active;
+            }
+        }
+        return active;
+    }
+
+    int find_free_slot() const
+    {
+        for (size_t i = 0; i < WEB_UI_MAX_CONNECTION_SLOTS; ++i) {
+            if (!m_slots[i].active) {
+                return (int)i;
+            }
+        }
+        return -1;
+    }
+
+    void update_stats()
+    {
+        m_stats.listen_port = WEB_UI_LISTEN_PORT;
+        m_stats.max_clients = configured_max_clients();
+        m_stats.active_clients = active_client_count();
+    }
+
+    static void write_service_unavailable(WiFiClient &client)
+    {
+        client.setNoDelay(true);
+        (void)client.print(
+            "HTTP/1.1 503 Service Unavailable\r\n"
+            "Connection: close\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: 19\r\n"
+            "\r\n"
+            "Service Unavailable");
+    }
+
+    void reject_client(WiFiClient &incoming, const char *reason)
+    {
+        write_service_unavailable(incoming);
+        incoming.stop();
+        ++m_stats.rejected_connections;
+        set_last_error(reason != NULL ? reason : "limit_reached");
+        Serial.printf("[webui] reject client=%s:%u reason=%s active=%u max=%u\r\n",
+            incoming.remoteIP().toString().c_str(),
+            (unsigned)incoming.remotePort(),
+            reason != NULL ? reason : "limit_reached",
+            (unsigned)active_client_count(),
+            (unsigned)configured_max_clients());
+    }
+
+    void accept_pending_clients()
+    {
+        for (;;) {
+            WiFiClient incoming = _server.available();
+            int slot_index;
+
+            if (!incoming) {
+                break;
+            }
+
+            slot_index = find_free_slot();
+            if (slot_index < 0 || active_client_count() >= configured_max_clients()) {
+                reject_client(incoming, "limit_reached");
+                continue;
+            }
+
+            incoming.setNoDelay(true);
+            m_slots[slot_index].active = true;
+            m_slots[slot_index].client = incoming;
+            m_slots[slot_index].remote_ip = incoming.remoteIP();
+            m_slots[slot_index].remote_port = incoming.remotePort();
+            m_slots[slot_index].accepted_ms = millis();
+            ++m_stats.accepted_connections;
+            set_last_error("none");
+            Serial.printf("[webui] accept slot=%d client=%s:%u active=%u max=%u\r\n",
+                slot_index,
+                incoming.remoteIP().toString().c_str(),
+                (unsigned)incoming.remotePort(),
+                (unsigned)(active_client_count()),
+                (unsigned)configured_max_clients());
+        }
+    }
+
+    void finalize_current_client()
+    {
+        _currentClient = WiFiClient();
+        _currentStatus = HC_NONE;
+        _currentUpload.reset();
+        _currentRaw.reset();
+    }
+
+    void process_pending_clients()
+    {
+        for (size_t i = 0; i < WEB_UI_MAX_CONNECTION_SLOTS; ++i) {
+            WebUiPendingClient &slot = m_slots[i];
+            bool client_open;
+
+            if (!slot.active) {
+                continue;
+            }
+
+            client_open = slot.client.connected() || slot.client.available() > 0;
+            if (!client_open) {
+                clear_slot(slot);
+                continue;
+            }
+            if (slot.client.available() <= 0) {
+                if ((uint32_t)(millis() - slot.accepted_ms) > HTTP_MAX_DATA_WAIT) {
+                    Serial.printf("[webui] close slot=%u client=%s:%u reason=read_timeout\r\n",
+                        (unsigned)i,
+                        slot.remote_ip.toString().c_str(),
+                        (unsigned)slot.remote_port);
+                    clear_slot(slot);
+                }
+                continue;
+            }
+
+            _currentClient = slot.client;
+            _currentStatus = HC_WAIT_READ;
+            _statusChange = slot.accepted_ms;
+            if (_parseRequest(_currentClient)) {
+                _currentClient.setTimeout(HTTP_MAX_SEND_WAIT / 1000);
+                _contentLength = CONTENT_LENGTH_NOT_SET;
+                _handleRequest();
+                ++m_stats.completed_connections;
+                set_last_error("none");
+            } else {
+                set_last_error("parse_failed");
+                Serial.printf("[webui] close slot=%u client=%s:%u reason=parse_failed\r\n",
+                    (unsigned)i,
+                    slot.remote_ip.toString().c_str(),
+                    (unsigned)slot.remote_port);
+            }
+            slot.client.stop();
+            finalize_current_client();
+            clear_slot(slot);
+        }
+    }
+};
+
+}  // namespace
+
+static LimitedWebServer s_server(WEB_UI_LISTEN_PORT);
 static bool s_server_started = false;
 
 static String ip_to_str(const uint8_t *ip4)
@@ -171,6 +407,17 @@ static bool parse_u16(const String &text, uint16_t *value)
     if (!parse_u32(text, &parsed) || parsed > 65535u) return false;
     *value = (uint16_t)parsed;
     return true;
+}
+
+static uint8_t clamp_web_service_limit(uint32_t value)
+{
+    if (value < MIN_WEB_SERVICE_CLIENTS) {
+        return MIN_WEB_SERVICE_CLIENTS;
+    }
+    if (value > MAX_WEB_SERVICE_CLIENTS) {
+        return MAX_WEB_SERVICE_CLIENTS;
+    }
+    return (uint8_t)value;
 }
 
 static void append_html_escaped(String &out, const char *text)
@@ -902,6 +1149,20 @@ static bool fy_settings_changed(const EspConfig &left, const EspConfig &right)
         || strcmp(left.awg_serial_mode, right.awg_serial_mode) != 0;
 }
 
+static const char *save_back_path(const String &section)
+{
+    if (section == "network" || section == "lan" || section == "service_limits") {
+        return "/network";
+    }
+    if (section == "scope" || section == "scope_proxy") {
+        return "/scope";
+    }
+    if (section == "fy6900") {
+        return "/fy6900";
+    }
+    return "/bode";
+}
+
 static void append_protocol_diag_section(String &page)
 {
     const NetStats *stats = net_get_stats();
@@ -1077,8 +1338,9 @@ static void handle_root(void)
 
 static void handle_network_get(void)
 {
+    const WebUiServerStats *web_stats = webconfig_get_stats();
     String page;
-    page.reserve(11200);
+    page.reserve(13200);
     append_page_start(page, "Network");
     append_nav(page, "/network");
     append_summary_cards(page);
@@ -1144,6 +1406,50 @@ static void handle_network_get(void)
     page += F("'></div></div><small>This dedicated Ethernet LAN stays static. Configure the oscilloscope target address in the Scope tab. Gateway and DNS remain 0.0.0.0 here, while the UI and the minimal NTP server stay available on this address whenever the Ethernet link is up.</small>"
               "<div class='actions'><button class='btn' type='submit'>Save LAN</button></div></form></section>");
 
+    page += F("<section class='card'><h2>HTTP Service Limits</h2><form method='post' action='/save'>"
+              "<input type='hidden' name='section' value='service_limits'>"
+              "<div class='grid'>"
+              "<div class='field'><label>Web UI max clients (:80)</label><input type='number' min='2' max='30' step='1' name='max_web_ui_clients' value='");
+    page += String((unsigned)g_config.max_web_ui_clients);
+    page += F("'><small>Allowed range: 2..30. Active now: ");
+    page += String((unsigned)web_stats->active_clients);
+    page += F(" / ");
+    page += String((unsigned)web_stats->max_clients);
+    page += F(".</small></div><div class='field'><label>Scope HTTP proxy max clients (:100)</label><input type='number' min='2' max='30' step='1' name='max_scope_http_proxy_clients' value='");
+    page += String((unsigned)g_config.max_scope_http_proxy_clients);
+    page += F("'><small>Allowed range: 2..30. Active now: ");
+    page += String((unsigned)scope_http_proxy_get_stats()->active_connections);
+    page += F(" / ");
+    page += String((unsigned)scope_http_proxy_get_stats()->max_connections);
+    page += F(".</small></div><div class='field'><label>noVNC / WebSocket max clients (:5900)</label><input type='number' min='2' max='30' step='1' name='max_scope_vnc_proxy_clients' value='");
+    page += String((unsigned)g_config.max_scope_vnc_proxy_clients);
+    page += F("'><small>Allowed range: 2..30. Active now: ");
+    page += String((unsigned)scope_vnc_proxy_get_stats()->active_connections);
+    page += F(" / ");
+    page += String((unsigned)scope_vnc_proxy_get_stats()->max_connections);
+    page += F(".</small></div></div>"
+              "<small>Each limit is independent. When a limit is reached, the extra HTTP/WebSocket connection receives HTTP 503 and is closed immediately.</small>"
+              "<div class='actions'><button class='btn' type='submit'>Save Limits</button></div></form></section>");
+
+    page += F("<section class='card'><h2>NTP Policy</h2><table>"
+              "<tr><td>NTP LAN only</td><td>");
+    page += runtime_net_ntp_lan_only() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>LAN subnet restriction active</td><td>");
+    page += runtime_net_ntp_subnet_restriction_active() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>NTP rate limit active</td><td>");
+    page += runtime_net_ntp_rate_limit_active() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>NTP rate limit</td><td>");
+    page += String((unsigned)runtime_net_ntp_rate_limit_per_ip());
+    page += F(" per IP / ");
+    page += String((unsigned)runtime_net_ntp_rate_limit_global());
+    page += F(" global per ");
+    page += String((unsigned)NTP_RATE_LIMIT_WINDOW_MS);
+    page += F(" ms</td></tr><tr><td>NTP policy drops</td><td>");
+    page += String((unsigned long)runtime_net_ntp_policy_drop_count());
+    page += F("</td></tr><tr><td>NTP rate-limit drops</td><td>");
+    page += String((unsigned long)runtime_net_ntp_rate_limit_drop_count());
+    page += F("</td></tr></table></section>");
+
     append_page_end(page);
     send_page(page);
 }
@@ -1198,8 +1504,16 @@ static void handle_scope_get(void)
     page += ip_to_str(g_config.scope_ip);
     page += F(":");
     page += String((unsigned)SCOPE_VNC_PROXY_TARGET_PORT);
-    page += F("</td></tr><tr><td>HTTP proxy clients</td><td>");
+    page += F("</td></tr><tr><td>HTTP proxy active/max</td><td>");
     page += String((unsigned)proxy_stats->active_connections);
+    page += F("/");
+    page += String((unsigned)proxy_stats->max_connections);
+    page += F("</td></tr><tr><td>HTTP proxy listen port</td><td>");
+    page += String((unsigned)scope_http_proxy_listen_port());
+    page += F("</td></tr><tr><td>noVNC active/max</td><td>");
+    page += String((unsigned)vnc_stats->active_connections);
+    page += F("/");
+    page += String((unsigned)vnc_stats->max_connections);
     page += F("</td></tr><tr><td>noVNC clients</td><td>");
     page += String((unsigned)vnc_stats->active_connections);
     page += F("</td></tr><tr><td>Total active proxy clients</td><td>");
@@ -1212,10 +1526,6 @@ static void handle_scope_get(void)
     page += String((unsigned long)proxy_stats->failed_connects);
     page += F("</td></tr><tr><td>noVNC failed connects</td><td>");
     page += String((unsigned long)vnc_stats->failed_connects);
-    page += F("</td></tr><tr><td>noVNC active/max</td><td>");
-    page += String((unsigned)vnc_stats->active_connections);
-    page += F("/");
-    page += String((unsigned)vnc_stats->max_connections);
     page += F("</td></tr><tr><td>noVNC bytes client->scope</td><td>");
     page += String((unsigned long)vnc_stats->total_client_to_scope_bytes);
     page += F("</td></tr><tr><td>noVNC bytes scope->client</td><td>");
@@ -1320,6 +1630,7 @@ static void handle_bode_get(void)
 
 static void handle_diag_get(void)
 {
+    const WebUiServerStats *web_stats = webconfig_get_stats();
     String page;
     page.reserve(9400);
     append_page_start(page, "Diagnostics");
@@ -1367,6 +1678,10 @@ static void handle_diag_get(void)
     }
     page += F("</td></tr><tr><td>Recovery AP clients</td><td>");
     page += String((unsigned)runtime_net_ap_client_count());
+    page += F("</td></tr><tr><td>Web UI clients</td><td>");
+    page += String((unsigned)web_stats->active_clients);
+    page += F("/");
+    page += String((unsigned)web_stats->max_clients);
     page += F("</td></tr></table></section>");
 
     page += F("<section class='card'><h2>Time / NTP</h2><table>"
@@ -1374,10 +1689,27 @@ static void handle_diag_get(void)
     page += runtime_net_time_status_text();
     page += F("</td></tr><tr><td>LAN NTP server</td><td>");
     page += runtime_net_ntp_server_running() ? F("on") : F("off");
+    page += F("</td></tr><tr><td>NTP LAN only</td><td>");
+    page += runtime_net_ntp_lan_only() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>LAN subnet restriction</td><td>");
+    page += runtime_net_ntp_subnet_restriction_active() ? F("yes") : F("no");
+    page += F("</td></tr><tr><td>NTP rate limit</td><td>");
+    page += runtime_net_ntp_rate_limit_active() ? F("on") : F("off");
+    page += F(" (");
+    page += String((unsigned)runtime_net_ntp_rate_limit_per_ip());
+    page += F(" per IP / ");
+    page += String((unsigned)runtime_net_ntp_rate_limit_global());
+    page += F(" global per ");
+    page += String((unsigned)NTP_RATE_LIMIT_WINDOW_MS);
+    page += F(" ms)");
     page += F("</td></tr><tr><td>Configured upstream</td><td>");
     page += g_config.ntp_server;
     page += F("</td></tr><tr><td>NTP requests served</td><td>");
     page += String((unsigned long)runtime_net_ntp_request_count());
+    page += F("</td></tr><tr><td>NTP policy drops</td><td>");
+    page += String((unsigned long)runtime_net_ntp_policy_drop_count());
+    page += F("</td></tr><tr><td>NTP rate-limit drops</td><td>");
+    page += String((unsigned long)runtime_net_ntp_rate_limit_drop_count());
     page += F("</td></tr><tr><td>Last NTP served</td><td>");
     page += String((unsigned long)runtime_net_ntp_last_served_ms());
     page += F(" ms</td></tr></table></section>");
@@ -1395,6 +1727,8 @@ static void handle_diag_get(void)
     page += scope_proxy_status_text();
     page += F("</td></tr><tr><td>HTTP proxy clients</td><td>");
     page += String((unsigned)scope_http_proxy_get_stats()->active_connections);
+    page += F("/");
+    page += String((unsigned)scope_http_proxy_get_stats()->max_connections);
     page += F("</td></tr><tr><td>Total active proxy clients</td><td>");
     page += String((unsigned)(scope_http_proxy_get_stats()->active_connections + scope_vnc_proxy_get_stats()->active_connections));
     page += F("</td></tr><tr><td>HTTP proxy listen port</td><td>");
@@ -1756,6 +2090,7 @@ static void handle_save_get(void)
 static void handle_save_post(void)
 {
     EspConfig next = g_config;
+    EspConfig previous = g_config;
     String section = s_server.arg("section");
     String error;
     String warning;
@@ -1910,6 +2245,42 @@ static void handle_save_post(void)
         if (next.scope_http_proxy_enable > 1u) {
             ok = false; error += F("Invalid proxy enable state. ");
         }
+    } else if (section == "service_limits") {
+        uint32_t parsed_web = 0;
+        uint32_t parsed_http = 0;
+        uint32_t parsed_vnc = 0;
+        uint8_t clamped_web;
+        uint8_t clamped_http;
+        uint8_t clamped_vnc;
+
+        if (!parse_u32(s_server.arg("max_web_ui_clients"), &parsed_web)) {
+            ok = false; error += F("Invalid Web UI client limit. ");
+        }
+        if (!parse_u32(s_server.arg("max_scope_http_proxy_clients"), &parsed_http)) {
+            ok = false; error += F("Invalid HTTP proxy client limit. ");
+        }
+        if (!parse_u32(s_server.arg("max_scope_vnc_proxy_clients"), &parsed_vnc)) {
+            ok = false; error += F("Invalid noVNC client limit. ");
+        }
+
+        clamped_web = clamp_web_service_limit(parsed_web);
+        clamped_http = clamp_web_service_limit(parsed_http);
+        clamped_vnc = clamp_web_service_limit(parsed_vnc);
+
+        if (ok) {
+            if (parsed_web != clamped_web) {
+                warning += F(" Web UI client limit was clamped to 2..30.");
+            }
+            if (parsed_http != clamped_http) {
+                warning += F(" Scope HTTP proxy client limit was clamped to 2..30.");
+            }
+            if (parsed_vnc != clamped_vnc) {
+                warning += F(" noVNC client limit was clamped to 2..30.");
+            }
+            next.max_web_ui_clients = clamped_web;
+            next.max_scope_http_proxy_clients = clamped_http;
+            next.max_scope_vnc_proxy_clients = clamped_vnc;
+        }
     } else if (section == "fy6900") {
         uint32_t baud = 0;
         uint16_t timeout = 0;
@@ -1965,14 +2336,7 @@ static void handle_save_post(void)
     }
 
     if (!ok) {
-        send_message_page("Save failed", error, true,
-            section == "network" ? "/network"
-                : section == "lan" ? "/network"
-                : section == "scope" ? "/scope"
-                : section == "scope_proxy" ? "/scope"
-                : section == "fy6900" ? "/fy6900"
-                : "/bode",
-            "Back", false);
+        send_message_page("Save failed", error, true, save_back_path(section), "Back", false);
         return;
     }
 
@@ -1981,8 +2345,18 @@ static void handle_save_post(void)
     g_config = next;
 
     if (!saveConfig()) {
+        g_config = previous;
         send_message_page("Save failed", String(F("Preferences/NVS write failed.")), true,
             "/", "Back", false);
+        return;
+    }
+    if (!config_last_save_wrote()) {
+        send_message_page("No changes saved",
+            String(F("No real changes were detected. Preferences/NVS was not rewritten.")) + warning,
+            false,
+            save_back_path(section),
+            "Back",
+            false);
         return;
     }
     if (fy_changed) {
@@ -2000,11 +2374,7 @@ static void handle_save_post(void)
                 ? String(F("Config saved to Preferences. FY changes were not applied automatically in this manual safe build; use the FY manual/final test controls to initialize UART2 on demand."))
             : String(F("Config saved to Preferences. Safe runtime updates were applied immediately where possible."))) + warning,
         false,
-        section == "network" ? "/network"
-            : section == "lan" ? "/network"
-            : section == "scope" ? "/scope"
-            : section == "fy6900" ? "/fy6900"
-            : "/bode",
+        save_back_path(section),
         "Back",
         network_changed);
 }
@@ -2082,5 +2452,10 @@ void webconfig_begin(void)
 void webconfig_poll(void)
 {
     if (!s_server_started) return;
-    s_server.handleClient();
+    s_server.poll_limited();
+}
+
+const WebUiServerStats *webconfig_get_stats(void)
+{
+    return s_server.stats();
 }

@@ -51,6 +51,13 @@ uint8_t runtime_net_sta_retry_limit(void);
 const char *runtime_net_last_fail_reason(void);
 uint32_t runtime_net_ntp_request_count(void);
 uint32_t runtime_net_ntp_last_served_ms(void);
+bool runtime_net_ntp_lan_only(void);
+bool runtime_net_ntp_subnet_restriction_active(void);
+bool runtime_net_ntp_rate_limit_active(void);
+uint8_t runtime_net_ntp_rate_limit_per_ip(void);
+uint8_t runtime_net_ntp_rate_limit_global(void);
+uint32_t runtime_net_ntp_rate_limit_drop_count(void);
+uint32_t runtime_net_ntp_policy_drop_count(void);
 
 bool runtime_net_scope_probe_available(void);
 bool runtime_net_scope_reachable(void);

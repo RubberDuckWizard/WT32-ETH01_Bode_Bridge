@@ -33,6 +33,20 @@ static bool s_listening = false;
 static uint8_t s_poll_cursor = 0u;
 
 static void poll_connection(ProxyConnection *conn);
+static void set_last_error(const char *text);
+
+static uint8_t proxy_max_connections()
+{
+    uint8_t value = g_config.max_scope_vnc_proxy_clients;
+
+    if (value < MIN_WEB_SERVICE_CLIENTS) {
+        value = MIN_WEB_SERVICE_CLIENTS;
+    }
+    if (value > SCOPE_VNC_PROXY_MAX_CONNECTIONS) {
+        value = SCOPE_VNC_PROXY_MAX_CONNECTIONS;
+    }
+    return value;
+}
 
 static void update_runtime_flags()
 {
@@ -43,7 +57,7 @@ static void update_runtime_flags()
     s_stats.listening = s_listening;
     s_stats.listen_port = SCOPE_VNC_PROXY_LISTEN_PORT;
     s_stats.target_port = SCOPE_VNC_PROXY_TARGET_PORT;
-    s_stats.max_connections = SCOPE_VNC_PROXY_MAX_CONNECTIONS;
+    s_stats.max_connections = proxy_max_connections();
     for (size_t i = 0; i < SCOPE_VNC_PROXY_MAX_CONNECTIONS; ++i) {
         if (s_connections[i].active) {
             ++active;
@@ -59,6 +73,20 @@ static void set_last_error(const char *text)
     }
     strncpy(s_stats.last_error, text, sizeof(s_stats.last_error) - 1u);
     s_stats.last_error[sizeof(s_stats.last_error) - 1u] = '\0';
+}
+
+static void reject_with_503(WiFiClient &incoming, const char *reason)
+{
+    incoming.setNoDelay(true);
+    (void)incoming.print(
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        "Connection: close\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 19\r\n"
+        "\r\n"
+        "Service Unavailable");
+    incoming.stop();
+    set_last_error(reason != NULL ? reason : "limit_reached");
 }
 
 static void clear_connection(ProxyConnection *conn)
@@ -267,15 +295,18 @@ static bool open_connection(WiFiClient &incoming)
     ProxyConnection *conn;
     WiFiClient upstream;
     int slot_index;
+    uint8_t active_before = s_stats.active_connections;
+    uint8_t max_connections = proxy_max_connections();
 
     slot_index = find_free_slot();
-    if (slot_index < 0) {
-        set_last_error("slot_exhausted");
+    if (slot_index < 0 || active_before >= max_connections) {
         ++s_stats.dropped_connections;
-        Serial.printf("[proxy_vnc] reject client=%s:%u reason=slot_exhausted\r\n",
+        Serial.printf("[proxy_vnc] reject client=%s:%u reason=limit_reached active=%u max=%u\r\n",
             incoming.remoteIP().toString().c_str(),
-            (unsigned)incoming.remotePort());
-        incoming.stop();
+            (unsigned)incoming.remotePort(),
+            (unsigned)active_before,
+            (unsigned)max_connections);
+        reject_with_503(incoming, "limit_reached");
         update_runtime_flags();
         return false;
     }
@@ -308,12 +339,14 @@ static bool open_connection(WiFiClient &incoming)
     ++s_stats.accepted_connections;
     set_last_error("none");
     update_runtime_flags();
-    Serial.printf("[proxy_vnc] accept slot=%d client=%s:%u target=%u.%u.%u.%u:%u\r\n",
+    Serial.printf("[proxy_vnc] accept slot=%d client=%s:%u target=%u.%u.%u.%u:%u active=%u max=%u\r\n",
         slot_index,
         conn->client_ip.toString().c_str(),
         (unsigned)conn->client_port,
         g_config.scope_ip[0], g_config.scope_ip[1], g_config.scope_ip[2], g_config.scope_ip[3],
-        (unsigned)SCOPE_VNC_PROXY_TARGET_PORT);
+        (unsigned)SCOPE_VNC_PROXY_TARGET_PORT,
+        (unsigned)s_stats.active_connections,
+        (unsigned)proxy_max_connections());
     return true;
 }
 

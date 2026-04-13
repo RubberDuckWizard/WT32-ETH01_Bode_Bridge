@@ -129,6 +129,13 @@ Role of WiFi:
 - internet access for time synchronization
 - browser access to the WT32 UI
 
+Final default network policy in the release build:
+
+- WiFi STA default: `DEF_USE_DHCP = 1`; the stored static tuple starts unset and is only used after an explicit user configuration
+- dedicated LAN default: `DEF_IP` remains the WT32 scope-side LAN default at `10.11.13.221/24`
+- recovery AP default: fixed `192.168.4.1/24` on its own subnet
+- `DEF_IP` is no longer reused as an implicit WiFi STA static default, which avoids an immediate STA/LAN subnet conflict on clean NVS
+
 ### Permanent Recovery AP
 
 - default SSID: `WT32-BODE-SETUP`
@@ -143,6 +150,21 @@ Role of WiFi:
 - `AP` = recovery and local service access
 - `UART2` = FY6900 control
 
+## Final Persistence Policy
+
+- normal `Preferences` / `NVS` writes happen only on explicit user actions such as `Save` in the Web UI or `Factory reset`
+- `Save` with an unchanged resulting configuration is a no-op and reports `No changes saved` instead of rewriting flash
+- there is no periodic autosave, background save, or runtime save loop in the final main build
+- boot-time automatic writes are kept only for critical cases: legacy migration, failed configuration load, or a critical repair that is needed to make the stored configuration coherent enough to boot correctly
+- minor normalization that does not block coherent operation stays in RAM until the user performs an explicit save
+
+Behavior on clean NVS / first boot:
+
+- WiFi STA comes up in DHCP mode by default
+- the dedicated LAN stays static on `10.11.13.221/24`
+- the recovery AP stays available on `192.168.4.1/24`
+- a single boot-time commit is still allowed if essential defaults or migration data must be materialized into `NVS`
+
 ## Build Variants Kept
 
 ### `wt32eth_release_final_safe`
@@ -155,8 +177,9 @@ Main public build with:
 - minimal LAN NTP server
 - Bode/VXI runtime
 - FY6900 runtime support
-- HTTP proxy on port `100`
-- noVNC/WebSocket proxy on port `5900`
+- configurable Web UI connection limit on port `80`
+- configurable HTTP proxy connection limit on port `100`
+- configurable noVNC/WebSocket connection limit on port `5900`
 
 ### `wt32eth_bringup_safe`
 
@@ -192,6 +215,23 @@ Useful routes in the final build:
 - `/fy6900` FY UART2 configuration
 - `/bode` Bode-related stored parameters
 - `/diag` runtime diagnostics
+
+In the current bench setup, the Web UI can be reached at:
+
+- `http://192.168.91.157`
+
+HTTP service connection limits in the final build:
+
+- port `80` (`Web UI`), port `100` (`scope HTTP proxy`), and port `5900` (`noVNC/WebSocket proxy`) are limited independently
+- each limit is configurable from the Web UI in the range `2..30`
+- the factory/default value for each of the three limits is `6`
+- when a limit is reached, the extra incoming connection receives `HTTP 503 Service Unavailable`, then `Connection: close`, and is closed immediately
+
+Web UI save behavior in the final build:
+
+- unchanged form submissions do not rewrite `NVS`
+- changed form submissions persist normally and report `Configuration saved`
+- the same save/no-save behavior is shared by the relevant Web UI configuration sections because the write decision is centralized around `saveConfig()`
 
 Typical use flow:
 
@@ -230,12 +270,25 @@ The final release build uses deferred FY initialization so that the network and 
 - listens on `http://<ESP32_IP>:100/`
 - forwards to `scope_ip:80`
 - intended for the oscilloscope web pages
+- has an independent configurable simultaneous-client limit in the Web UI (`2..30`, default `6`)
 
 ### noVNC / VNC Proxy
 
 - listens on `ws://<ESP32_IP>:5900/websockify`
 - forwards to `scope_ip:5900`
-- validated with two simultaneous noVNC clients in the retained project validation
+- has an independent configurable simultaneous-client limit in the Web UI (`2..30`, default `6`)
+
+### Web UI Server
+
+- listens on `http://<ESP32_IP>/`
+- has its own independent configurable simultaneous-client limit in the Web UI (`2..30`, default `6`)
+
+### LAN NTP Service
+
+- serves NTP only for clients that originate from the dedicated scope-side LAN subnet
+- does not answer AP-side or non-LAN requests
+- applies a fixed lightweight UDP rate limit before replying: `8 requests / second / source IP` and `16 requests / second` globally, in a `1000 ms` window
+- ignored requests outside the LAN policy, or beyond the NTP rate limit, are dropped silently
 
 ## Build And Flash
 
@@ -356,3 +409,14 @@ At release-preparation level, the following were already validated locally:
 - `wt32eth_release_final_safe`
 - `wt32eth_bringup_safe`
 - `wt32eth_final_test_safe`
+
+Final release validation completed locally on `2026-04-13` for `wt32eth_release_final_safe`:
+
+- clean build completed successfully with `pio run -e wt32eth_release_final_safe -t clean; pio run -e wt32eth_release_final_safe`
+- erase + flash + boot capture on `COM6` completed successfully
+- first boot after erase showed `stored_config_valid=no`, `dhcp=on`, LAN `10.11.13.221/24`, recovery AP `192.168.4.1`, and both proxy listeners active
+- live Web UI access was verified at `http://192.168.91.157/`
+- a real Web UI save with unchanged `service_limits` returned `No changes saved`
+- a real Web UI save changing `max_web_ui_clients` from `6` to `7` returned `Configuration saved`, and `/network` reflected the new stored value
+- the value was restored from `7` back to `6`, again through the final Web UI, and `/network` reflected the restored default
+- the runtime status page stayed healthy after the tests: LAN active, WiFi STA connected, AP active, time synced, scope reachable, HTTP proxy listening, and noVNC proxy listening

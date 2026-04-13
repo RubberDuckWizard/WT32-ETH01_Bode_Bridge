@@ -8,6 +8,14 @@ Date: 2026-04-13
 
 This release refreshes the published firmware artifacts for the final primary build `wt32eth_release_final_safe` and keeps the auxiliary safe builds aligned with the current repository state. It also rolls forward the latest UI/runtime consistency fixes and the final README documentation update that clarifies the real bench wiring, LAN/WiFi roles, and release usage.
 
+This pass also finalizes the persistence policy for the main release build:
+
+- WiFi STA now defaults to DHCP on clean configuration
+- the dedicated LAN keeps the `10.11.13.221/24` default separately from WiFi STA
+- normal `Preferences` / `NVS` writes stay user-driven
+- unchanged saves are explicit no-op saves instead of redundant flash rewrites
+- boot-time automatic writes are limited to migration, failed-load recovery, or critical configuration repair
+
 ### Included Build Variants
 
 - `wt32eth_release_final_safe`
@@ -41,6 +49,14 @@ Release refresh validation rebuilt all kept environments successfully on April 1
   Flash: `922241` bytes
 
 Observed artifact hashes are documented in [release/SHA256SUMS.txt](release/SHA256SUMS.txt), and the local validation baseline is summarized in [docs/VALIDATION_SUMMARY.md](docs/VALIDATION_SUMMARY.md).
+
+Additional final-pass validation for `wt32eth_release_final_safe` on April 13, 2026:
+
+- clean rebuild succeeded
+- erase + flash on `COM6` succeeded
+- first boot after erase was captured on the real `WT32-ETH01`
+- the final Web UI responded live at `http://192.168.91.157/`
+- a real no-op save and a real changed save were both verified through the Web UI
 
 ### Known Limits
 

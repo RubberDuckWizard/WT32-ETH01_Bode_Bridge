@@ -9,6 +9,7 @@ struct ScopeHttpProxyStats {
     bool listening;
     uint16_t listen_port;
     uint8_t active_connections;
+    uint8_t max_connections;
     uint32_t accepted_connections;
     uint32_t completed_connections;
     uint32_t failed_connects;

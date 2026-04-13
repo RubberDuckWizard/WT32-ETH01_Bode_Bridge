@@ -61,6 +61,18 @@ WiFiUDP s_ntp_udp;
 bool s_ntp_server_started = false;
 uint32_t s_ntp_request_count = 0;
 uint32_t s_ntp_last_served_ms = 0;
+uint32_t s_ntp_policy_drop_count = 0;
+uint32_t s_ntp_rate_limit_drop_count = 0;
+
+struct NtpRateEntry {
+    uint32_t remote_ip;
+    uint32_t window_start_ms;
+    uint8_t count;
+};
+
+NtpRateEntry s_ntp_rate_entries[NTP_RATE_LIMIT_TRACKED_IPS];
+uint32_t s_ntp_rate_global_window_ms = 0;
+uint8_t s_ntp_rate_global_count = 0;
 #endif
 
 static void set_fail_reason(const char *reason)
@@ -476,6 +488,54 @@ static bool ntp_remote_on_lan(IPAddress remote)
     return same_subnet(remote, runtime_net_lan_ip(), runtime_net_lan_subnet());
 }
 
+static bool ntp_rate_limit_allow(IPAddress remote)
+{
+    uint32_t now = millis();
+    uint32_t remote_u32 = ip_to_u32(remote);
+    int slot_index = -1;
+    int reuse_index = 0;
+    uint32_t oldest_age = 0;
+
+    if ((uint32_t)(now - s_ntp_rate_global_window_ms) >= NTP_RATE_LIMIT_WINDOW_MS) {
+        s_ntp_rate_global_window_ms = now;
+        s_ntp_rate_global_count = 0u;
+    }
+    if (s_ntp_rate_global_count >= NTP_RATE_LIMIT_GLOBAL_MAX) {
+        return false;
+    }
+
+    for (size_t i = 0; i < NTP_RATE_LIMIT_TRACKED_IPS; ++i) {
+        if (s_ntp_rate_entries[i].remote_ip == remote_u32) {
+            slot_index = (int)i;
+            break;
+        }
+        uint32_t age = now - s_ntp_rate_entries[i].window_start_ms;
+        if (s_ntp_rate_entries[i].remote_ip == 0u || age > oldest_age) {
+            oldest_age = age;
+            reuse_index = (int)i;
+        }
+    }
+
+    if (slot_index < 0) {
+        slot_index = reuse_index;
+        s_ntp_rate_entries[slot_index].remote_ip = remote_u32;
+        s_ntp_rate_entries[slot_index].window_start_ms = now;
+        s_ntp_rate_entries[slot_index].count = 0u;
+    }
+
+    if ((uint32_t)(now - s_ntp_rate_entries[slot_index].window_start_ms) >= NTP_RATE_LIMIT_WINDOW_MS) {
+        s_ntp_rate_entries[slot_index].window_start_ms = now;
+        s_ntp_rate_entries[slot_index].count = 0u;
+    }
+    if (s_ntp_rate_entries[slot_index].count >= NTP_RATE_LIMIT_PER_IP_MAX) {
+        return false;
+    }
+
+    ++s_ntp_rate_global_count;
+    ++s_ntp_rate_entries[slot_index].count;
+    return true;
+}
+
 static void poll_time_sync(void)
 {
     bool valid_now = ntp_time_valid();
@@ -499,6 +559,7 @@ static void poll_time_sync(void)
 
 static void start_ntp_server_if_needed(void)
 {
+    if (!s_state.lan_has_ip) return;
     if (s_ntp_server_started) return;
     s_ntp_server_started = s_ntp_udp.begin(LAN_NTP_PORT);
     Serial.printf("[ntp] server=%s port=%u lan_ip=%s mask=%s\r\n",
@@ -530,6 +591,7 @@ static void poll_ntp_server(void)
             continue;
         }
         if (!ntp_remote_on_lan(s_ntp_udp.remoteIP())) {
+            ++s_ntp_policy_drop_count;
             if ((uint32_t)(millis() - s_last_ntp_drop_log_ms) >= 3000U) {
                 s_last_ntp_drop_log_ms = millis();
                 Serial.printf("[ntp] drop reason=not-on-lan remote=%s:%u lan=%s/%s has_ip=%s\r\n",
@@ -538,6 +600,20 @@ static void poll_ntp_server(void)
                     runtime_net_lan_ip().toString().c_str(),
                     runtime_net_lan_subnet().toString().c_str(),
                     s_state.lan_has_ip ? "yes" : "no");
+            }
+            continue;
+        }
+        if (!ntp_rate_limit_allow(s_ntp_udp.remoteIP())) {
+            ++s_ntp_rate_limit_drop_count;
+            if ((uint32_t)(millis() - s_last_ntp_drop_log_ms) >= 3000U) {
+                s_last_ntp_drop_log_ms = millis();
+                Serial.printf("[ntp] drop reason=rate-limit remote=%s:%u global=%u/%u per_ip_limit=%u window_ms=%u\r\n",
+                    s_ntp_udp.remoteIP().toString().c_str(),
+                    (unsigned)s_ntp_udp.remotePort(),
+                    (unsigned)s_ntp_rate_global_count,
+                    (unsigned)NTP_RATE_LIMIT_GLOBAL_MAX,
+                    (unsigned)NTP_RATE_LIMIT_PER_IP_MAX,
+                    (unsigned)NTP_RATE_LIMIT_WINDOW_MS);
             }
             continue;
         }
@@ -931,6 +1007,69 @@ uint32_t runtime_net_ntp_last_served_ms(void)
     return s_ntp_last_served_ms;
 #else
     return 0;
+#endif
+}
+
+bool runtime_net_ntp_lan_only(void)
+{
+#if ENABLE_MINIMAL_LAN_NTP
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool runtime_net_ntp_subnet_restriction_active(void)
+{
+#if ENABLE_MINIMAL_LAN_NTP
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool runtime_net_ntp_rate_limit_active(void)
+{
+#if ENABLE_MINIMAL_LAN_NTP
+    return NTP_RATE_LIMIT_GLOBAL_MAX > 0u && NTP_RATE_LIMIT_PER_IP_MAX > 0u;
+#else
+    return false;
+#endif
+}
+
+uint8_t runtime_net_ntp_rate_limit_per_ip(void)
+{
+#if ENABLE_MINIMAL_LAN_NTP
+    return (uint8_t)NTP_RATE_LIMIT_PER_IP_MAX;
+#else
+    return 0u;
+#endif
+}
+
+uint8_t runtime_net_ntp_rate_limit_global(void)
+{
+#if ENABLE_MINIMAL_LAN_NTP
+    return (uint8_t)NTP_RATE_LIMIT_GLOBAL_MAX;
+#else
+    return 0u;
+#endif
+}
+
+uint32_t runtime_net_ntp_rate_limit_drop_count(void)
+{
+#if ENABLE_MINIMAL_LAN_NTP
+    return s_ntp_rate_limit_drop_count;
+#else
+    return 0u;
+#endif
+}
+
+uint32_t runtime_net_ntp_policy_drop_count(void)
+{
+#if ENABLE_MINIMAL_LAN_NTP
+    return s_ntp_policy_drop_count;
+#else
+    return 0u;
 #endif
 }
 
