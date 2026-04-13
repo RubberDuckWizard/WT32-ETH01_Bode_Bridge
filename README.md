@@ -78,8 +78,7 @@ That means:
 - `Scope CH1` = reference channel
 - `Scope CH2` / `CH3` / `CH4` = DUT measurement channels
 
-For the DUT measurement inputs, use `1 MOhm to 50 Ohm` input adapters on the oscilloscope channels where the DUT response is measured. This is an actual hardware requirement of the documented setup and is not optional in the final wiring description.
-The oscilloscope inputs that are part of the BODE measurement path must be used with 50 Ω termination. Because the SDS800X HD only has 1 MΩ inputs, external BNC 50 Ω terminators/adapters are needed.
+Important: all oscilloscope channels used in the DUT measurement path must be externally terminated to 50 Ω. The SDS800X HD only provides 1 MΩ inputs and does not offer a built-in 50 Ω input mode, so external 'BNC 50 Ω feed-through terminators' are mandatory for this setup.
 
 ### UART And Grounding
 
