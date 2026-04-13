@@ -1,22 +1,24 @@
 # Validation Summary
 
-## Release Preparation Checkpoint
+## Release Refresh Checkpoint
 
-Date: 2026-04-11
+Date: 2026-04-13
 
 ## Verified PlatformIO Builds
 
-All kept environments were rebuilt successfully during release preparation:
+All kept environments were rebuilt successfully during release refresh validation:
 
 - `wt32eth_release_final_safe`
-  RAM: `62124` bytes
-  Flash: `947705` bytes
+  RAM: `62156` bytes
+  Flash: `951113` bytes
 - `wt32eth_bringup_safe`
-  RAM: `61632` bytes
-  Flash: `886325` bytes
+  RAM: `61664` bytes
+  Flash: `889609` bytes
 - `wt32eth_final_test_safe`
-  RAM: `61928` bytes
-  Flash: `918885` bytes
+  RAM: `61968` bytes
+  Flash: `922241` bytes
+
+Updated binary artifact hashes for the current packaged output are recorded in [../release/SHA256SUMS.txt](../release/SHA256SUMS.txt).
 
 ## Retained Behavioral Evidence
 
